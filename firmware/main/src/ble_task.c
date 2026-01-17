@@ -215,13 +215,40 @@ static void handle_complete_message(const char *message)
         int expected_bytes = (bits + 7) / 8;
         const char *hex_data = colon + 1;
         
+        uint8_t similarity_threshold = 50;
+        const char *threshold_colon = NULL;
+        int hex_len = strlen(hex_data);
+        for (int i = hex_len - 1; i >= 0; i--) {
+            if (hex_data[i] == ':') {
+                threshold_colon = &hex_data[i];
+                break;
+            }
+        }
+        if (threshold_colon != NULL) {
+            int thresh = atoi(threshold_colon + 1);
+            if (thresh >= 0 && thresh <= 100) {
+                similarity_threshold = (uint8_t)thresh;
+            }
+            hex_len = threshold_colon - hex_data;
+        }
+        
         uint8_t *binary = malloc(expected_bytes);
         if (binary == NULL) {
             ble_send_message("BITMASK_ERR:MEM\n");
             return;
         }
         
-        int actual_bytes = hex_to_bytes(hex_data, binary, expected_bytes);
+        char *hex_copy = malloc(hex_len + 1);
+        if (hex_copy == NULL) {
+            free(binary);
+            ble_send_message("BITMASK_ERR:MEM\n");
+            return;
+        }
+        memcpy(hex_copy, hex_data, hex_len);
+        hex_copy[hex_len] = '\0';
+        
+        int actual_bytes = hex_to_bytes(hex_copy, binary, expected_bytes);
+        free(hex_copy);
         if (actual_bytes != expected_bytes) {
             free(binary);
             ble_send_message("BITMASK_ERR:DATA\n");
@@ -232,11 +259,12 @@ static void handle_complete_message(const char *message)
         esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
         if (err == ESP_OK) {
             nvs_set_blob(my_handle, "bitmask", binary, actual_bytes);
+            nvs_set_u8(my_handle, "bitmask_thr", similarity_threshold);
             nvs_commit(my_handle);
             nvs_close(my_handle);
         }
         
-        espnow_set_config_bitmask(binary, actual_bytes);
+        espnow_set_config_bitmask(binary, actual_bytes, similarity_threshold);
         free(binary);
         
         ble_send_message("BITMASK_OK\n");
@@ -259,6 +287,14 @@ static void handle_complete_message(const char *message)
 
         espnow_set_config_key(public_key);
         ble_send_message("PUBKEY_OK\n");
+        return;
+    }
+
+    if (strncmp(message, "ENC_URL:", 8) == 0) {
+        const char *url_data = message + 8;
+        ESP_LOGI(TAG, "Received encrypted URL to relay");
+        espnow_set_relay_url(url_data);
+        ble_send_message("ENC_URL_OK\n");
         return;
     }
 

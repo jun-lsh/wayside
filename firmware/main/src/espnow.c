@@ -31,12 +31,13 @@ void espnow_set_config_key(const char *key) {
     xQueueSend(s_espnow_queue, &evt, portMAX_DELAY);
 }
 
-void espnow_set_config_bitmask(const uint8_t *data, uint16_t len) {
+void espnow_set_config_bitmask(const uint8_t *data, uint16_t len, uint8_t similarity_threshold) {
     if (s_espnow_queue == NULL || data == NULL || len == 0) return;
     
     espnow_event_t evt;
     evt.id = ESPNOW_SET_BITMASK;
     evt.info.set_bitmask.len = len;
+    evt.info.set_bitmask.similarity_threshold = similarity_threshold;
     evt.info.set_bitmask.data = malloc(len);
     if (evt.info.set_bitmask.data == NULL) return;
     memcpy(evt.info.set_bitmask.data, data, len);
@@ -44,6 +45,17 @@ void espnow_set_config_bitmask(const uint8_t *data, uint16_t len) {
     if (xQueueSend(s_espnow_queue, &evt, portMAX_DELAY) != pdTRUE) {
         free(evt.info.set_bitmask.data);
     }
+}
+
+void espnow_set_relay_url(const char *url) {
+    if (s_espnow_queue == NULL || url == NULL) return;
+    
+    espnow_event_t evt;
+    evt.id = ESPNOW_SET_RELAY_URL;
+    strncpy(evt.info.set_relay_url.url, url, KEY_EXCHANGE_URL_MAX_LEN - 1);
+    evt.info.set_relay_url.url[KEY_EXCHANGE_URL_MAX_LEN - 1] = '\0';
+    
+    xQueueSend(s_espnow_queue, &evt, portMAX_DELAY);
 }
 
 /* ESPNOW sending callback function is called in WiFi task.
@@ -157,9 +169,15 @@ static void espnow_task(void *pvParameter)
                     pairing_set_pubkey(&s_pairing_ctx, evt.info.set_key.key);
                     break;
                 case ESPNOW_SET_BITMASK:
-                    ESP_LOGI(TAG, "Applying Bitmask (%d bytes)", evt.info.set_bitmask.len);
+                    ESP_LOGI(TAG, "Applying Bitmask (%d bytes, threshold=%d%%)", 
+                             evt.info.set_bitmask.len, evt.info.set_bitmask.similarity_threshold);
                     pairing_set_bitmask(&s_pairing_ctx, evt.info.set_bitmask.data, evt.info.set_bitmask.len);
+                    pairing_set_similarity_threshold(&s_pairing_ctx, evt.info.set_bitmask.similarity_threshold);
                     free(evt.info.set_bitmask.data);
+                    break;
+                case ESPNOW_SET_RELAY_URL:
+                    ESP_LOGI(TAG, "Setting relay URL for key exchange");
+                    pairing_set_relay_url(&s_pairing_ctx, evt.info.set_relay_url.url);
                     break;
                 default:
                     ESP_LOGE(TAG, "Unknown event id: %d", evt.id);

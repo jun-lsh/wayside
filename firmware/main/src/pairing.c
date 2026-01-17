@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -7,6 +8,10 @@
 #include "esp_now.h"
 #include "pairing.h"
 #include "espnow.h"
+#include "ble_task.h"
+
+#define PAIRING_DEFAULT_SIMILARITY_THRESHOLD 50
+#define PAIRING_MIN_RSSI_PROPOSING RSSI_ZONE_MEDIUM
 
 static const char *TAG = "pairing";
 
@@ -21,12 +26,16 @@ static void handle_heartbeat(pairing_ctx_t *ctx, const uint8_t *mac_addr, const 
 static void fill_packet_header(pairing_ctx_t *ctx, broadcast_header_t *pkt);
 static void register_peer(const uint8_t *mac);
 static uint32_t get_time_ms(void);
+static void send_key_exchange(pairing_ctx_t *ctx);
+static void send_relay_url(pairing_ctx_t *ctx);
 
 static size_t build_packet_with_bitmask(pairing_ctx_t *ctx, uint8_t *buf, size_t buf_size, 
                                         uint8_t msg_type, const char *pubkey);
 static bool parse_incoming_packet(const uint8_t *data, int len,
                                   uint8_t **out_bitmask, uint16_t *out_bitmask_len,
                                   const char **out_pubkey);
+static uint8_t calculate_bitmask_similarity(const uint8_t *a, uint16_t a_len,
+                                            const uint8_t *b, uint16_t b_len);
 
 esp_err_t pairing_init(pairing_ctx_t *ctx)
 {
@@ -48,6 +57,10 @@ esp_err_t pairing_init(pairing_ctx_t *ctx)
     
     memset(ctx->my_public_key, 0, PAIRING_KEY_MAX_LEN);
     memset(ctx->partner_public_key, 0, PAIRING_KEY_MAX_LEN);
+
+    ctx->similarity_threshold = PAIRING_DEFAULT_SIMILARITY_THRESHOLD;
+
+    memset(&ctx->kex, 0, sizeof(key_exchange_ctx_t));
 
     esp_err_t ret = esp_read_mac(ctx->my_mac, ESP_MAC_WIFI_STA);
     if (ret != ESP_OK) {
@@ -129,72 +142,119 @@ void pairing_handle_recv(pairing_ctx_t *ctx, const uint8_t *mac_addr,
         return;
     }
 
+    /*
+     * state machine for pairing two devices at a con/hackathon:
+     * 
+     * SEARCHING: broadcast hello, wait for someone interesting
+     *   - on hello: check bitmask similarity (dice coefficient), propose if above threshold
+     *   - on proposal: accept immediately (they already checked our bitmask)
+     * 
+     * PROPOSING: we found someone, waiting for their response
+     *   - on accept: check rssi proximity (must be within ~5m), then pair
+     *   - on reject: back to searching
+     *   - on proposal (tie-breaker): both devices proposed simultaneously.
+     *     pick the closer one (higher rssi). if equal rssi, fall back to mac comparison
+     *     to ensure both devices make the same deterministic choice
+     * 
+     * PAIRED: connected, exchanging heartbeats
+     *   - on heartbeat: update rssi, reset timeout
+     *   - on proposal from others: reject (already paired)
+     * 
+     * the idea: filter by interests first (bitmask), then by proximity (rssi).
+     * bitmask similarity is symmetric so we only check on hello, not on proposal.
+     */
     switch (ctx->current_state) {
 
         case SEARCHING:
             if (pkt->msg_type == MSG_HELLO) {
-                ESP_LOGI(TAG, "Received HELLO from " MACSTR ", proposing...", MAC2STR(mac_addr));
-                
-                if (recv_bitmask != NULL && recv_bitmask_len > 0) {
-                    if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
-                    ctx->partner_bitmask = malloc(recv_bitmask_len);
-                    if (ctx->partner_bitmask != NULL) {
-                        memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
-                        ctx->partner_bitmask_len = recv_bitmask_len;
-                    }
+                if (recv_bitmask == NULL || recv_bitmask_len == 0) {
+                    ESP_LOGD(TAG, "Ignoring HELLO from " MACSTR " (no bitmask)", MAC2STR(mac_addr));
+                    break;
                 }
                 
+                uint8_t similarity = calculate_bitmask_similarity(
+                    ctx->bitmask, ctx->bitmask_len, recv_bitmask, recv_bitmask_len);
+                
+                if (similarity < ctx->similarity_threshold) {
+                    ESP_LOGI(TAG, "Ignoring HELLO from " MACSTR " (similarity %d%% < %d%%)",
+                             MAC2STR(mac_addr), similarity, ctx->similarity_threshold);
+                    break;
+                }
+                
+                ESP_LOGI(TAG, "HELLO from " MACSTR " similarity=%d%%, proposing...", 
+                         MAC2STR(mac_addr), similarity);
+                
+                if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
+                ctx->partner_bitmask = malloc(recv_bitmask_len);
+                if (ctx->partner_bitmask != NULL) {
+                    memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
+                    ctx->partner_bitmask_len = recv_bitmask_len;
+                }
+                
+                ctx->proposal_rssi = rssi;
                 propose_pairing(ctx, mac_addr);
             }
             else if (pkt->msg_type == MSG_PROPOSAL) {
-                if (recv_pubkey != NULL && recv_bitmask != NULL) {
-                    ESP_LOGI(TAG, "Received PROPOSAL from " MACSTR " with key+bitmask, accepting...", MAC2STR(mac_addr));
-                    
-                    strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
-                    ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
-                    
-                    if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
-                    ctx->partner_bitmask = malloc(recv_bitmask_len);
-                    if (ctx->partner_bitmask != NULL) {
-                        memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
-                        ctx->partner_bitmask_len = recv_bitmask_len;
-                    }
-                    
-                    accept_pairing(ctx, mac_addr);
-                } else {
+                if (recv_pubkey == NULL || recv_bitmask == NULL) {
                     ESP_LOGW(TAG, "Ignored PROPOSAL from " MACSTR " (missing payload)", MAC2STR(mac_addr));
+                    break;
                 }
+                
+                ESP_LOGI(TAG, "PROPOSAL from " MACSTR ", accepting...", MAC2STR(mac_addr));
+                
+                strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
+                ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
+                
+                if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
+                ctx->partner_bitmask = malloc(recv_bitmask_len);
+                if (ctx->partner_bitmask != NULL) {
+                    memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
+                    ctx->partner_bitmask_len = recv_bitmask_len;
+                }
+                
+                accept_pairing(ctx, mac_addr);
             }
             break;
 
         case PROPOSING:
             if (memcmp(ctx->partner_mac, mac_addr, ESP_NOW_ETH_ALEN) == 0) {
                 if (pkt->msg_type == MSG_ACCEPT) {
-                    if (recv_pubkey != NULL) {
-                        strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
-                        ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
-                        
-                        if (recv_bitmask != NULL && recv_bitmask_len > 0) {
-                            if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
-                            ctx->partner_bitmask = malloc(recv_bitmask_len);
-                            if (ctx->partner_bitmask != NULL) {
-                                memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
-                                ctx->partner_bitmask_len = recv_bitmask_len;
-                            }
-                        }
-                        
-                        ctx->current_state = PAIRED;
-                        uint32_t now = get_time_ms();
-                        ctx->last_heartbeat_sent = now;
-                        ctx->last_heartbeat_recv = now;
-                        ctx->heartbeat_seq = 0;
-                        ctx->partner_seq = 0;
-                        ctx->missed_heartbeats = 0;
-                        ctx->partner_rssi = rssi;
-                        ESP_LOGI(TAG, ">>> PAIRED with " MACSTR, MAC2STR(ctx->partner_mac));
-                    } else {
+                    if (recv_pubkey == NULL) {
                         ESP_LOGW(TAG, "Ignored ACCEPT (missing pubkey)");
+                        break;
                     }
+                    
+                    if (rssi < PAIRING_MIN_RSSI_PROPOSING) {
+                        ESP_LOGI(TAG, "Ignored ACCEPT from " MACSTR " (rssi %d < %d)",
+                                 MAC2STR(mac_addr), rssi, PAIRING_MIN_RSSI_PROPOSING);
+                        break;
+                    }
+                    
+                    strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
+                    ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
+                    
+                    if (recv_bitmask != NULL && recv_bitmask_len > 0) {
+                        if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
+                        ctx->partner_bitmask = malloc(recv_bitmask_len);
+                        if (ctx->partner_bitmask != NULL) {
+                            memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
+                            ctx->partner_bitmask_len = recv_bitmask_len;
+                        }
+                    }
+                    
+                    ctx->current_state = PAIRED;
+                    uint32_t now = get_time_ms();
+                    ctx->last_heartbeat_sent = now;
+                    ctx->last_heartbeat_recv = now;
+                    ctx->heartbeat_seq = 0;
+                    ctx->partner_seq = 0;
+                    ctx->missed_heartbeats = 0;
+                    ctx->partner_rssi = rssi;
+                    
+                    memset(&ctx->kex, 0, sizeof(key_exchange_ctx_t));
+                    ctx->kex.active = true;
+                    
+                    ESP_LOGI(TAG, ">>> PAIRED with " MACSTR " (rssi=%d)", MAC2STR(ctx->partner_mac), rssi);
                 }
                 else if (pkt->msg_type == MSG_REJECT) {
                     ctx->current_state = SEARCHING;
@@ -202,38 +262,68 @@ void pairing_handle_recv(pairing_ctx_t *ctx, const uint8_t *mac_addr,
                 }
             }
             else if (pkt->msg_type == MSG_PROPOSAL) {
-                if (memcmp(mac_addr, ctx->my_mac, ESP_NOW_ETH_ALEN) > 0) {
-                    ESP_LOGI(TAG, "Tie-breaker: accepting " MACSTR " (higher MAC)", MAC2STR(mac_addr));
-                    if (recv_pubkey != NULL && recv_bitmask != NULL) {
-                        strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
-                        ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
-                        
-                        if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
-                        ctx->partner_bitmask = malloc(recv_bitmask_len);
-                        if (ctx->partner_bitmask != NULL) {
-                            memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
-                            ctx->partner_bitmask_len = recv_bitmask_len;
-                        }
-                        
-                        accept_pairing(ctx, mac_addr);
-                    }
-                } else {
-                    ESP_LOGI(TAG, "Tie-breaker: rejecting " MACSTR " (lower MAC)", MAC2STR(mac_addr));
+                if (rssi < PAIRING_MIN_RSSI_PROPOSING) {
+                    ESP_LOGI(TAG, "Tie-breaker: rejecting " MACSTR " (rssi %d < %d)",
+                             MAC2STR(mac_addr), rssi, PAIRING_MIN_RSSI_PROPOSING);
                     send_reject(ctx, mac_addr);
+                    break;
                 }
+                
+                if (recv_pubkey == NULL || recv_bitmask == NULL) {
+                    ESP_LOGW(TAG, "Tie-breaker: rejecting " MACSTR " (missing payload)", MAC2STR(mac_addr));
+                    send_reject(ctx, mac_addr);
+                    break;
+                }
+                
+                bool is_closer = (rssi > ctx->proposal_rssi) ||
+                                 (rssi == ctx->proposal_rssi && 
+                                  memcmp(mac_addr, ctx->partner_mac, ESP_NOW_ETH_ALEN) > 0);
+                
+                if (!is_closer) {
+                    ESP_LOGI(TAG, "Tie-breaker: rejecting " MACSTR " (rssi %d <= current %d)",
+                             MAC2STR(mac_addr), rssi, ctx->proposal_rssi);
+                    send_reject(ctx, mac_addr);
+                    break;
+                }
+                
+                ESP_LOGI(TAG, "Tie-breaker: accepting " MACSTR " (closer, rssi=%d > %d)", 
+                         MAC2STR(mac_addr), rssi, ctx->proposal_rssi);
+                         
+                strncpy(ctx->partner_public_key, recv_pubkey, PAIRING_KEY_MAX_LEN - 1);
+                ctx->partner_public_key[PAIRING_KEY_MAX_LEN - 1] = '\0';
+                
+                if (ctx->partner_bitmask != NULL) free(ctx->partner_bitmask);
+                ctx->partner_bitmask = malloc(recv_bitmask_len);
+                if (ctx->partner_bitmask != NULL) {
+                    memcpy(ctx->partner_bitmask, recv_bitmask, recv_bitmask_len);
+                    ctx->partner_bitmask_len = recv_bitmask_len;
+                }
+                
+                ctx->proposal_rssi = rssi;
+                accept_pairing(ctx, mac_addr);
             }
             break;
 
         case PAIRED:
-            if (pkt->msg_type == MSG_HEARTBEAT) {
-                if (memcmp(ctx->partner_mac, mac_addr, ESP_NOW_ETH_ALEN) == 0) {
+            if (memcmp(ctx->partner_mac, mac_addr, ESP_NOW_ETH_ALEN) == 0) {
+                if (pkt->msg_type == MSG_HEARTBEAT) {
                     handle_heartbeat(ctx, mac_addr, pkt, rssi);
+                }
+                else if (pkt->msg_type == MSG_KEY_EXCHANGE) {
+                    ctx->kex.key_confirmed = true;
+                    ESP_LOGI(TAG, "Key exchange confirmed from " MACSTR, MAC2STR(mac_addr));
+                }
+                else if (pkt->msg_type == MSG_RELAY_URL) {
+                    if (recv_pubkey != NULL) {
+                        strncpy(ctx->kex.incoming_url, recv_pubkey, KEY_EXCHANGE_URL_MAX_LEN - 1);
+                        ctx->kex.incoming_url[KEY_EXCHANGE_URL_MAX_LEN - 1] = '\0';
+                        ctx->kex.has_incoming_url = true;
+                        ESP_LOGI(TAG, "Received relay URL from " MACSTR, MAC2STR(mac_addr));
+                    }
                 }
             }
             else if (pkt->msg_type == MSG_PROPOSAL) {
-                if (memcmp(ctx->partner_mac, mac_addr, ESP_NOW_ETH_ALEN) != 0) {
-                    send_reject(ctx, mac_addr);
-                }
+                send_reject(ctx, mac_addr);
             }
             break;
     }
@@ -270,6 +360,35 @@ void pairing_tick(pairing_ctx_t *ctx)
             if (now - ctx->last_heartbeat_recv > PAIRING_HEARTBEAT_MS * PAIRING_HEARTBEAT_MISS_MAX) {
                 ESP_LOGW(TAG, "Lost connection to partner");
                 pairing_reset(ctx);
+                break;
+            }
+            
+            if (ctx->kex.active) {
+                if (!ctx->kex.key_sent) {
+                    send_key_exchange(ctx);
+                    ctx->kex.key_sent = true;
+                }
+                
+                if (ctx->kex.key_confirmed && !ctx->kex.notified_phone) {
+                    char msg[PAIRING_KEY_MAX_LEN + 16];
+                    snprintf(msg, sizeof(msg), "PARTNER:%s\n", ctx->partner_public_key);
+                    ble_send_message(msg);
+                    ctx->kex.notified_phone = true;
+                    ESP_LOGI(TAG, "Notified phone of partner pubkey");
+                }
+                
+                if (ctx->kex.has_outgoing_url && !ctx->kex.outgoing_url_sent) {
+                    send_relay_url(ctx);
+                    ctx->kex.outgoing_url_sent = true;
+                }
+                
+                if (ctx->kex.has_incoming_url) {
+                    char msg[KEY_EXCHANGE_URL_MAX_LEN + 16];
+                    snprintf(msg, sizeof(msg), "RECV_URL:%s\n", ctx->kex.incoming_url);
+                    ble_send_message(msg);
+                    ctx->kex.has_incoming_url = false;
+                    ESP_LOGI(TAG, "Sent received URL to phone");
+                }
             }
             break;
     }
@@ -287,6 +406,8 @@ void pairing_reset(pairing_ctx_t *ctx)
         ctx->partner_bitmask = NULL;
     }
     ctx->partner_bitmask_len = 0;
+    
+    memset(&ctx->kex, 0, sizeof(key_exchange_ctx_t));
     
     ctx->last_action_time = get_time_ms();
     ESP_LOGI(TAG, "Pairing reset to SEARCHING");
@@ -437,6 +558,9 @@ static void accept_pairing(pairing_ctx_t *ctx, const uint8_t *target_mac)
     ctx->last_heartbeat_sent = now;
     ctx->last_heartbeat_recv = now;
     ctx->heartbeat_seq = 0;
+    
+    memset(&ctx->kex, 0, sizeof(key_exchange_ctx_t));
+    ctx->kex.active = true;
 
     register_peer(target_mac);
 
@@ -491,4 +615,89 @@ static void register_peer(const uint8_t *mac)
 static uint32_t get_time_ms(void)
 {
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+}
+
+static uint8_t calculate_bitmask_similarity(const uint8_t *a, uint16_t a_len,
+                                            const uint8_t *b, uint16_t b_len)
+{
+    if (a == NULL || b == NULL || a_len == 0 || b_len == 0) {
+        return 0;
+    }
+
+    uint16_t min_len = a_len < b_len ? a_len : b_len;
+    uint32_t and_count = 0;
+    uint32_t a_count = 0;
+    uint32_t b_count = 0;
+
+    for (uint16_t i = 0; i < min_len; i++) {
+        and_count += __builtin_popcount(a[i] & b[i]);
+        a_count += __builtin_popcount(a[i]);
+        b_count += __builtin_popcount(b[i]);
+    }
+
+    for (uint16_t i = min_len; i < a_len; i++) {
+        a_count += __builtin_popcount(a[i]);
+    }
+    for (uint16_t i = min_len; i < b_len; i++) {
+        b_count += __builtin_popcount(b[i]);
+    }
+
+    uint32_t total = a_count + b_count;
+    if (total == 0) {
+        return 0;
+    }
+
+    return (uint8_t)((200 * and_count) / total);
+}
+
+void pairing_set_similarity_threshold(pairing_ctx_t *ctx, uint8_t threshold)
+{
+    if (ctx == NULL) return;
+    ctx->similarity_threshold = threshold > 100 ? 100 : threshold;
+    ESP_LOGI(TAG, "Similarity threshold set to %d%%", ctx->similarity_threshold);
+}
+
+static void send_key_exchange(pairing_ctx_t *ctx)
+{
+    uint8_t buf[HEADER_SIZE + PAIRING_KEY_MAX_LEN];
+    size_t pkt_size = build_packet_with_bitmask(ctx, buf, sizeof(buf), MSG_KEY_EXCHANGE, ctx->partner_public_key);
+    
+    if (pkt_size > 0) {
+        esp_err_t ret = esp_now_send(ctx->partner_mac, buf, pkt_size);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "--> Sent KEY_EXCHANGE to " MACSTR, MAC2STR(ctx->partner_mac));
+        } else {
+            ESP_LOGE(TAG, "Failed to send KEY_EXCHANGE: %s", esp_err_to_name(ret));
+        }
+    }
+}
+
+static void send_relay_url(pairing_ctx_t *ctx)
+{
+    uint8_t buf[HEADER_SIZE + KEY_EXCHANGE_URL_MAX_LEN];
+    size_t pkt_size = build_packet_with_bitmask(ctx, buf, sizeof(buf), MSG_RELAY_URL, ctx->kex.outgoing_url);
+    
+    if (pkt_size > 0) {
+        esp_err_t ret = esp_now_send(ctx->partner_mac, buf, pkt_size);
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "--> Sent RELAY_URL to " MACSTR, MAC2STR(ctx->partner_mac));
+        } else {
+            ESP_LOGE(TAG, "Failed to send RELAY_URL: %s", esp_err_to_name(ret));
+        }
+    }
+}
+
+void pairing_set_relay_url(pairing_ctx_t *ctx, const char *url)
+{
+    if (ctx == NULL || url == NULL) return;
+    if (ctx->current_state != PAIRED || !ctx->kex.active) {
+        ESP_LOGW(TAG, "Cannot set relay URL: not in active key exchange");
+        return;
+    }
+    
+    strncpy(ctx->kex.outgoing_url, url, KEY_EXCHANGE_URL_MAX_LEN - 1);
+    ctx->kex.outgoing_url[KEY_EXCHANGE_URL_MAX_LEN - 1] = '\0';
+    ctx->kex.has_outgoing_url = true;
+    ctx->kex.outgoing_url_sent = false;
+    ESP_LOGI(TAG, "Relay URL set, will send on next tick");
 }

@@ -52,7 +52,8 @@ typedef enum {
     ESPNOW_SEND_CB,
     ESPNOW_RECV_CB,
     ESPNOW_SET_KEY,
-    ESPNOW_SET_BITMASK
+    ESPNOW_SET_BITMASK,
+    ESPNOW_SET_RELAY_URL,
 } espnow_event_id_t;
 
 typedef struct {
@@ -62,7 +63,12 @@ typedef struct {
 typedef struct {
     uint8_t *data;
     uint16_t len;
+    uint8_t similarity_threshold;
 } espnow_event_set_bitmask_t;
+
+typedef struct {
+    char url[KEY_EXCHANGE_URL_MAX_LEN];
+} espnow_event_set_relay_url_t;
 
 /* Send callback event data */
 typedef struct {
@@ -84,6 +90,7 @@ typedef union {
     espnow_event_recv_cb_t recv_cb;
     espnow_event_set_key_t set_key;
     espnow_event_set_bitmask_t set_bitmask;
+    espnow_event_set_relay_url_t set_relay_url;
 } espnow_event_info_t;
 
 /* Event structure posted to ESP-NOW task */
@@ -135,6 +142,7 @@ extern const uint8_t espnow_broadcast_mac[ESP_NOW_ETH_ALEN];
  */
 esp_err_t espnow_init(void);
 void espnow_set_config_key(const char *key);
-void espnow_set_config_bitmask(const uint8_t *data, uint16_t len);
+void espnow_set_config_bitmask(const uint8_t *data, uint16_t len, uint8_t similarity_threshold);
+void espnow_set_relay_url(const char *url);
 
 #endif /* ESPNOW_H */
