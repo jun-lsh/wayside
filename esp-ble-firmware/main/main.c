@@ -1,10 +1,5 @@
 /*
- * main.c - Main Application Entry Point
- *
- * BLE Combined Advertising and Scanning with NFC I2C Interface
- *
- * SPDX-FileCopyrightText: 2021-2024 Espressif Systems (Shanghai) CO LTD
- * SPDX-License-Identifier: Unlicense OR CC0-1.0
+ * main.c - nfc demo with protection and fd modes
  */
 
 #include <stdio.h>
@@ -12,168 +7,185 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 
-#include "services.h"
 #include "drivers/nfc.h"
+#include "drivers/name.h"
 #include "definitions.h"
 
-static const char *TAG = "MAIN";
+static const char *TAG = "main";
 
-#define BUILD_DATE      __DATE__
-#define BUILD_TIME      __TIME__
-#define BUILD_TIMESTAMP BUILD_DATE " " BUILD_TIME
+#define BUILD_TIMESTAMP __DATE__ " " __TIME__
 
-const char *build_date = BUILD_DATE;
-const char *build_time = BUILD_TIME;
-const char *build_timestamp = BUILD_TIMESTAMP;
+static nfc_t nfc;
+static i2c_master_bus_handle_t i2c_bus;
+static volatile uint32_t uptime_seconds = 0;
 
-
-static nfc_handle_t nfc_handle;
-i2c_master_bus_handle_t i2c_bus = NULL;
-i2c_master_dev_handle_t nfc_i2c_dev = NULL;
-
-static esp_err_t gpio_init(void);
-static esp_err_t nvs_init(void);
-static void nfc_task(void *pvParameters);
-
-
-/**
- * @brief FD interrupt callback (called from ISR context!)
+/* memory layout:
+ * block 0   - uid, lock bytes, cc (read only / dont touch)
+ * block 1   - ndef tlv header
+ * block 2-3 - uptime + build info
+ * 
+ * protection example:
+ * block 16+ could be protected (auth0 = 0x40 = page 64 = block 16)
  */
-static void IRAM_ATTR nfc_fd_isr_callback(void *arg)
+#define BLOCK_INFO  2
+
+/* update nfc tag with current data */
+static void update_nfc_data(void)
 {
-    /* Keep this minimal - just set a flag or use task notification */
-    /* The task notification is already handled by the driver */
+    char buf[64];
+    
+    /* block 2-3: uptime and build */
+    int bytes = snprintf(buf, sizeof(buf), "up:%lus %s", 
+             (unsigned long)uptime_seconds, BUILD_TIMESTAMP);
+    nfc_write_bytes(&nfc, BLOCK_INFO, (uint8_t *)buf, bytes);
 }
 
-
-/**
- * @brief Initialize GPIO pins
- * 
- * Configures GP0 as output and sets it HIGH after boot.
- */
-static esp_err_t gpio_init(void)
+/* show current protection config */
+static void show_protection(void)
 {
-    esp_err_t ret;
+    nfc_prot_cfg_t cfg;
+    if (nfc_get_protection(&nfc, &cfg) == ESP_OK) {
+        ESP_LOGI(TAG, "protection: auth0=0x%02x (page %d, block %d)", 
+                 cfg.auth0, cfg.auth0, nfc_page_to_block(cfg.auth0));
+        ESP_LOGI(TAG, "  nfc_read_prot=%d, authlim=%d", cfg.nfc_read_prot, cfg.authlim);
+        ESP_LOGI(TAG, "  i2c_prot=%d, sram_prot=%d", cfg.i2c_prot, cfg.sram_prot);
+    }
+}
+
+/* nfc task - updates data and handles phone scans */
+static void nfc_task(void *arg)
+{
+    ESP_LOGI(TAG, "nfc task running");
     
-    /* Configure GP0 as output */
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << NFC_PWR_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
+    nfc_set_fd_task(&nfc, xTaskGetCurrentTaskHandle());
+    
+    /* configure fd pin:
+     * - goes low when rf field on
+     * - goes high when last ndef block read (block 3 in this example) */
+    nfc_set_fd_mode(&nfc, NFC_FD_OFF_LAST_NDEF, NFC_FD_ON_RF_ON);
+    nfc_set_last_ndef_block(&nfc, 3);  /* fd goes high after block 3 is read */
+    ESP_LOGI(TAG, "fd mode: low on rf, high after block 3 read");
+    
+    /* show current protection settings */
+    show_protection();
+    
+    /* example: optionally enable protection on blocks 16+
+     * uncomment to test password protection */
+    /*
+    nfc_prot_cfg_t prot = {
+        .auth0 = nfc_block_to_page(16),  // protect from block 16 onwards
+        .nfc_read_prot = false,          // write protect only (read still works)
+        .authlim = 0,                    // unlimited auth attempts
+        .i2c_prot = NFC_I2C_PROT_NONE,   // i2c has full access
+        .sram_prot = false,
+        .pwd = {0x01, 0x02, 0x03, 0x04},
+        .pack = {0xAB, 0xCD},
     };
+    nfc_set_protection(&nfc, &prot);
+    show_protection();
+    */
     
-    ret = gpio_config(&io_conf);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to configure GP0: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    bool was_rf = false;
+    uint32_t last_update = 0;
     
-    /* Set GP0 HIGH */
-    ret = gpio_set_level(NFC_PWR_PIN, 1);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to set GP0 high: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    ESP_LOGI(TAG, "GP0 configured as output and set HIGH");
-    return ESP_OK;
-}
-
-
-/**
- * @brief Initialize Non-Volatile Storage
- * 
- * Required for PHY calibration data and BLE operation.
- */
-static esp_err_t nvs_init(void)
-{
-    esp_err_t ret = nvs_flash_init();
-    
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition erased, reinitializing...");
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "NVS initialized successfully");
-    }
-    
-    return ret;
-}
-
-
-/**
- * @brief NFC task - waits for FD interrupts and handles NFC events
- * 
- * This task demonstrates using task notifications to wait for FD interrupts.
- */
-static void nfc_task(void *pvParameters)
-{
-    esp_err_t ret;
-    bool rf_present;
-    uint8_t block_data[NFC_BLOCK_SIZE];
-    
-    ESP_LOGI(TAG, "NFC task started");
-    
-    /* Register this task to receive FD interrupt notifications */
-    nfc_set_fd_notify_task(&nfc_handle, xTaskGetCurrentTaskHandle());
+    /* write initial data */
+    update_nfc_data();
+    ESP_LOGI(TAG, "wrote initial nfc data");
     
     while (1) {
-        /* Wait for FD interrupt or timeout after 5 seconds */
-        bool got_interrupt = nfc_wait_fd_interrupt(&nfc_handle, 5000);
+        /* 100ms poll for responsive updates */
+        nfc_wait_fd(&nfc, 100);
         
-        if (got_interrupt) {
-            ESP_LOGI(TAG, "NFC: FD interrupt! (count: %lu)", 
-                     (unsigned long)nfc_get_fd_int_count(&nfc_handle));
+        /* track uptime */
+        uint32_t now = xTaskGetTickCount() / configTICK_RATE_HZ;
+        if (now != last_update) {
+            uptime_seconds = now;
+            last_update = now;
+        }
+        
+        bool rf = nfc_rf_present(&nfc);
+        
+        if (rf && !was_rf) {
+            /* phone arrived */
+            ESP_LOGI(TAG, "** phone detected **");
+        }
+        else if (!rf && was_rf) {
+            /* phone left - wait a bit for chip to settle */
+            vTaskDelay(pdMS_TO_TICKS(10));
             
-            /* Check what triggered the interrupt */
-            ret = nfc_is_rf_field_present(&nfc_handle, &rf_present);
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "NFC: RF field %s", 
-                         rf_present ? "detected" : "removed");
+            ESP_LOGI(TAG, "phone left, reading back data...");
+            
+            /* read what's on the tag now */
+            uint8_t buf[64];
+            if (nfc_read_bytes(&nfc, BLOCK_INFO, buf, sizeof(buf)) == ESP_OK) {
+                if (buf[63] != 0) {
+                    buf[63] = 0;  /* ensure null termination */
+                }
+                /* print as string and hex */
+                ESP_LOGI(TAG, "  str: %s", buf);
+                char hex_str[3 * 64 + 1] = {0};
+                char *p = hex_str;
+                for (int i = 0; i < 64; i++) {
+                    p += sprintf(p, "%02x ", buf[i]);
+                }
+                ESP_LOGI(TAG, "  hex: %s", hex_str);
+            }
+            
+            /* update for next scan */
+            update_nfc_data();
+            ESP_LOGI(TAG, "updated nfc data (up:%lus)", (unsigned long)uptime_seconds);
+        }
+        else if (!rf) {
+            /* no phone - update every 2 seconds */
+            static uint32_t last_nfc_update = 0;
+            if (uptime_seconds - last_nfc_update >= 2) {
+                update_nfc_data();
+                last_nfc_update = uptime_seconds;
             }
         }
         
-        /* Periodic status check */
-        bool fd_state = nfc_read_fd_pin(&nfc_handle);
-        ESP_LOGD(TAG, "NFC FD pin state: %s", fd_state ? "HIGH" : "LOW");
-        
-        /* Example: Read block 1 (user memory starts here) */
-        ret = nfc_read_block(&nfc_handle, 0x01, block_data);
-        if (ret == ESP_OK) {
-            ESP_LOGD(TAG, "Block 0x01 data: %02X %02X %02X %02X...", 
-                     block_data[0], block_data[1], block_data[2], block_data[3]);
-        }
+        was_rf = rf;
     }
 }
-
 
 void app_main(void)
 {
     esp_err_t ret;
     
-    ESP_LOGI(TAG, "(start)");
-    ESP_LOGI(TAG, "Build: %s", BUILD_TIMESTAMP);
+    ESP_LOGI(TAG, "build: %s", BUILD_TIMESTAMP);
     
-    // init the gpio states (to power the nfc chip as well)
-    ret = gpio_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "GPIO initialization failed");
-        return;
+    /* power on nfc chip */
+    gpio_config_t pwr_cfg = {
+        .pin_bit_mask = (1ULL << NFC_PWR_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    gpio_config(&pwr_cfg);
+    gpio_set_level(NFC_PWR_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "nfc power on");
+    
+    /* init nvs */
+    ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        ret = nvs_flash_init();
     }
 
-    vTaskDelay(pdMS_TO_TICKS(100));  // wait for power to stabilize
+    char device_name[32];
+    nvs_handle_t my_handle;
+    nvs_open("name", NVS_READWRITE, &my_handle);
+    name_get(my_handle, device_name, sizeof(device_name));
+    nvs_close(my_handle);
+
+    ESP_LOGI(TAG, "device name: %s", device_name);
     
-    /* Configure I2C master bus */
-    i2c_master_bus_config_t bus_config = {
-        .i2c_port = NFC_I2C_PORT,
+    /* init i2c bus */
+    i2c_master_bus_config_t bus_cfg = {
+        .i2c_port = I2C_NUM_0,
         .sda_io_num = NFC_SDA_PIN,
         .scl_io_num = NFC_SCL_PIN,
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -181,86 +193,29 @@ void app_main(void)
         .flags.enable_internal_pullup = true,
     };
     
-    ret = i2c_new_master_bus(&bus_config, &i2c_bus);
+    ret = i2c_new_master_bus(&bus_cfg, &i2c_bus);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C bus init failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "i2c init failed");
         return;
     }
     
-    /* Add NFC device to bus */
-    i2c_device_config_t dev_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = NFC_I2C_ADDR_DEFAULT,
-        .scl_speed_hz = NFC_I2C_FREQ_HZ,
-    };
-    
-    ret = i2c_master_bus_add_device(i2c_bus, &dev_config, &nfc_i2c_dev);
+    /* init nfc */
+    ret = nfc_init(&nfc, i2c_bus, NFC_I2C_ADDR, NFC_I2C_FREQ_HZ, NFC_FD_PIN);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "I2C add device failed: %s", esp_err_to_name(ret));
-        i2c_del_master_bus(i2c_bus);
+        ESP_LOGE(TAG, "nfc init failed");
         return;
     }
     
-    ESP_LOGI(TAG, "I2C master initialized (SDA: GPIO%d, SCL: GPIO%d, %lu Hz)", 
-             NFC_SDA_PIN, NFC_SCL_PIN, (unsigned long)NFC_I2C_FREQ_HZ);
-
-    /* Initialize NFC driver with pin configuration */
-    ret = nfc_init(&nfc_handle, nfc_i2c_dev, NFC_FD_PIN);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NFC initialization failed: %s", esp_err_to_name(ret));
-        return;
+    /* show uid */
+    uint8_t block0[16];
+    if (nfc_read_block(&nfc, 0x00, block0, true) == ESP_OK) {
+        ESP_LOGI(TAG, "uid: %02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                 block0[0], block0[1], block0[2], block0[3],
+                 block0[4], block0[5], block0[6]);
     }
     
-    /* register FD interrupt callback (called from ISR context) */
-    nfc_set_fd_callback(&nfc_handle, nfc_fd_isr_callback, NULL);
+    /* start task */
+    xTaskCreate(nfc_task, "nfc", 4096, NULL, 5, NULL);
     
-    // init nt3h2111 nfc device
-    /* Read and display session registers to verify communication */
-    nfc_session_regs_t session_regs;
-    ret = nfc_read_session_registers(&nfc_handle, &session_regs);
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "NFC session registers:");
-        ESP_LOGI(TAG, "  NC_REG:    0x%02X", session_regs.nc_reg);
-        ESP_LOGI(TAG, "  NS_REG:    0x%02X (RF field: %s)", 
-                 session_regs.ns_reg,
-                 (session_regs.ns_reg & NFC_NS_RF_FIELD_PRESENT) ? "present" : "not detected");
-    } else {
-        ESP_LOGW(TAG, "Failed to read NFC session registers: %s", esp_err_to_name(ret));
-    }
-
-    // init nvs for ble phy calibration
-    ret = nvs_init();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "NVS initialization failed");
-        return;
-    }
-    
-
-    /* Start NFC task (uses FD interrupt notifications) */
-    //xTaskCreatePinnedToCore(nfc_task, "nfc_task", 4096, NULL, 5, NULL, 0);
-
-    // // ble scan periodic task
-    // const esp_timer_create_args_t periodic_timer_args = {
-    //     .callback = &periodic_timer_callback,
-    //     .name = "periodic"
-    // };
-    
-    // esp_timer_handle_t periodic_timer;
-    // ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
-    // ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 5000000));  /* 5 seconds */
-    
-    
-    // // bt nonsense
-    // ret = bt_init();
-    // if (ret != ESP_OK) {
-    //     ESP_LOGE(TAG, "Bluetooth initialization failed");
-    //     return;
-    // }
-    
-    // bt_send_commands();
-    // // start bt hci event processing task
-    // xTaskCreatePinnedToCore(&hci_evt_process, "hci_evt_process", 2048, NULL, 6, NULL, 0);
-    
-    ESP_LOGI(TAG, "(running)");
-    return;
+    ESP_LOGI(TAG, "ready - scan with phone!");
 }

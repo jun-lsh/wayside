@@ -1,8 +1,8 @@
 idf_component_register(
     SRCS 
         "main.c"
-        "bt_task.c"
         "drivers/nfc.c"
+        "drivers/name.c"
     INCLUDE_DIRS 
         "."
         "drivers"

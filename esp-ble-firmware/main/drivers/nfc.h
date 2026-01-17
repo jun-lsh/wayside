@@ -1,8 +1,5 @@
 /*
- * nfc.h - NT3H2111/NT3H2211 NFC I2C Driver
- *
- * Driver for NXP NTAG I2C plus NFC chip
- * Based on NT3H2111_2211 datasheet Rev. 3.6
+ * nfc.h - nt3h2111 nfc i2c driver
  */
 
 #ifndef NFC_H
@@ -15,338 +12,168 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/semphr.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* ============================================================================
- * I2C Configuration
- * ============================================================================ */
+/* i2c config */
+#define NFC_I2C_ADDR            0x55
+#define NFC_I2C_TIMEOUT_MS      100
+#define NFC_EEPROM_WRITE_DELAY_MS 1  /* wait time after writing to eeprom */
 
-#define NFC_I2C_PORT            I2C_NUM_0
-#define NFC_I2C_TIMEOUT_MS      1000
-
-/* Default I2C device address:
- *   7-bit slave address: 0x55
- *   8-bit write address: 0xAA (0x55 << 1 | 0)
- *   8-bit read address:  0xAB (0x55 << 1 | 1)
- * 
- * ESP-IDF uses 7-bit addressing - the driver shifts and adds R/W bit.
+/* memory map (i2c blocks are 16 bytes, nfc pages are 4 bytes)
+ * i2c block N = nfc pages N*4 to N*4+3
+ * block 0     - uid, lock bytes, cc
+ * block 1-55  - user data (1k) or 1-127 (2k)
+ * block 56-57 - auth config (auth0, access, pwd, pack, pt_i2c)
+ * block 58    - config registers
+ * block 248-251 - sram (64 bytes)
+ * block 254   - session registers
  */
-#define NFC_I2C_ADDR_DEFAULT    0x55
-
-/* ============================================================================
- * NT3H2111/2211 Memory Map
- * ============================================================================ */
-
-/* EEPROM memory blocks */
-#define NFC_BLOCK_SIZE          16           /* Each block is 16 bytes */
-
-/* NT3H2111 (1k) memory range: 0x00 to 0x3A */
-#define NFC_1K_EEPROM_START     0x00
-#define NFC_1K_EEPROM_END       0x3A
-
-/* NT3H2211 (2k) memory range: 0x00 to 0x7A */
-#define NFC_2K_EEPROM_START     0x00
-#define NFC_2K_EEPROM_END       0x7A
-
-/* SRAM memory range (both variants) */
-#define NFC_SRAM_START          0xF8
-#define NFC_SRAM_END            0xFB
-
-/* Session registers block */
+#define NFC_BLOCK_SIZE          16
 #define NFC_SESSION_REG_BLOCK   0xFE
+#define NFC_CONFIG_BLOCK        0x3A
+#define NFC_SRAM_START          0xF8
+#define NFC_AUTH_BLOCK          0x38    /* auth0 at byte 15 */
+#define NFC_ACCESS_BLOCK        0x39    /* access, pwd, pack, pt_i2c */
 
-/* Configuration block */
-#define NFC_CONFIG_BLOCK        0x3A         /* For 1k variant */
+/* session/config register offsets (same layout for both) */
+#define NFC_REG_NC              0x00
+#define NFC_REG_LAST_NDEF       0x01
+#define NFC_REG_SRAM_MIRROR     0x02
+#define NFC_REG_WDT_LS          0x03
+#define NFC_REG_WDT_MS          0x04
+#define NFC_REG_I2C_CLK_STR     0x05
+#define NFC_REG_NS              0x06    /* ns_reg in session, reg_lock in config */
 
-/* ============================================================================
- * Session Register Addresses (within block 0xFE)
- * ============================================================================ */
+/* ns_reg bits */
+#define NFC_NS_RF_FIELD         (1 << 0)
+#define NFC_NS_EEPROM_BUSY      (1 << 1)
+#define NFC_NS_SRAM_RF_READY    (1 << 4)
+#define NFC_NS_RF_LOCKED        (1 << 5)
+#define NFC_NS_I2C_LOCKED       (1 << 6)
+#define NFC_NS_NDEF_READ        (1 << 7)
 
-#define NFC_REG_NC_REG          0x00         /* NC_REG - NFC configuration */
-#define NFC_REG_LAST_NDEF_BLOCK 0x01         /* Last NDEF block */
-#define NFC_REG_SRAM_MIRROR_BLK 0x02         /* SRAM mirror block */
-#define NFC_REG_WDT_LS          0x03         /* Watchdog timer LS */
-#define NFC_REG_WDT_MS          0x04         /* Watchdog timer MS */
-#define NFC_REG_I2C_CLOCK_STR   0x05         /* I2C clock stretching */
-#define NFC_REG_NS_REG          0x06         /* NS_REG - NFC status */
-#define NFC_REG_FIXED           0x07         /* Fixed value (read-only) */
+/* nc_reg bits */
+#define NFC_NC_FD_OFF_SHIFT     4
+#define NFC_NC_FD_OFF_MASK      (0x03 << NFC_NC_FD_OFF_SHIFT)
+#define NFC_NC_FD_ON_SHIFT      2
+#define NFC_NC_FD_ON_MASK       (0x03 << NFC_NC_FD_ON_SHIFT)
+#define NFC_NC_SRAM_MIRROR      (1 << 1)
+#define NFC_NC_PTHRU            (1 << 0)
+#define NFC_NC_I2C_RST_ON_OFF   (1 << 7)
+#define NFC_NC_DIR_PTHRU        (1 << 6)    /* 0=nfc->i2c, 1=i2c->nfc */
 
-/* ============================================================================
- * NS_REG (Status Register) Bit Definitions
- * ============================================================================ */
+/* access block byte offsets (within block 0x39) */
+#define NFC_ACCESS_BYTE         0
+#define NFC_PWD_OFFSET          4
+#define NFC_PACK_OFFSET         8
+#define NFC_PT_I2C_OFFSET       12
 
-#define NFC_NS_NDEF_DATA_READ   (1 << 7)     /* NDEF data read by RF */
-#define NFC_NS_I2C_LOCKED       (1 << 6)     /* I2C locked */
-#define NFC_NS_RF_LOCKED        (1 << 5)     /* RF locked */
-#define NFC_NS_SRAM_I2C_READY   (1 << 4)     /* SRAM ready for I2C */
-#define NFC_NS_SRAM_RF_READY    (1 << 3)     /* SRAM ready for RF */
-#define NFC_NS_EEPROM_WR_ERR    (1 << 2)     /* EEPROM write error */
-#define NFC_NS_EEPROM_WR_BUSY   (1 << 1)     /* EEPROM write busy */
-#define NFC_NS_RF_FIELD_PRESENT (1 << 0)     /* RF field detected */
+/* access byte bits */
+#define NFC_ACCESS_NFC_PROT     (1 << 7)    /* 0=write protect, 1=read+write */
+#define NFC_ACCESS_NFC_DIS_SEC1 (1 << 5)    /* disable nfc access to sector 1 (2k only) */
+#define NFC_ACCESS_AUTHLIM_MASK 0x07
 
-/* ============================================================================
- * NC_REG (Configuration Register) Bit Definitions
- * ============================================================================ */
+/* pt_i2c byte bits */
+#define NFC_PT_2K_PROT          (1 << 3)    /* password protect sector 1 (2k only) */
+#define NFC_PT_SRAM_PROT        (1 << 2)    /* password protect sram in pthru */
+#define NFC_PT_I2C_PROT_MASK    0x03
 
-#define NFC_NC_NFCS_I2C_RST     (1 << 7)     /* I2C soft reset / NFC disable */
-#define NFC_NC_PTHRU_ON_OFF     (1 << 6)     /* Pass-through mode */
-#define NFC_NC_FD_OFF           (0 << 4)     /* FD pin: field detection */
-#define NFC_NC_FD_ON            (1 << 4)     /* FD pin options */
-#define NFC_NC_SRAM_MIRROR      (1 << 3)     /* SRAM mirror mode */
-#define NFC_NC_TRANSFER_DIR     (1 << 0)     /* Transfer direction */
+/* fd pin output modes (active low) */
+typedef enum {
+    NFC_FD_OFF_RF_OFF = 0,      /* fd high when rf field off */
+    NFC_FD_OFF_LAST_NDEF = 1,   /* fd high when last ndef block read */
+    NFC_FD_OFF_I2C_DONE = 2,    /* fd high when i2c write complete */
+} nfc_fd_off_t;
 
-/* ============================================================================
- * Timing Constants
- * ============================================================================ */
+typedef enum {
+    NFC_FD_ON_RF_ON = 0,        /* fd low when rf field on */
+    NFC_FD_ON_FIRST_NDEF = 1,   /* fd low when first ndef data read */
+    NFC_FD_ON_I2C_LAST = 2,     /* fd low when last i2c data received */
+    NFC_FD_ON_DATA_READY = 3,   /* fd low when sram data ready */
+} nfc_fd_on_t;
 
-#define NFC_EEPROM_WRITE_TIME_MS    4        /* EEPROM write cycle time */
-#define NFC_READ_DELAY_US           50       /* Delay before read start */
+/* i2c access protection level for protected memory area */
+typedef enum {
+    NFC_I2C_PROT_NONE = 0,      /* full read/write access */
+    NFC_I2C_PROT_READ_ONLY = 1, /* read only for protected area */
+    NFC_I2C_PROT_NO_ACCESS = 2, /* no access to protected area */
+} nfc_i2c_prot_t;
 
-/* ============================================================================
- * Interrupt Configuration
- * ============================================================================ */
-
-#define NFC_FD_INTR_TYPE        GPIO_INTR_NEGEDGE  /* Falling edge trigger */
-
-/* ============================================================================
- * Data Structures
- * ============================================================================ */
-
-/**
- * @brief FD interrupt callback type
- * 
- * @param arg User-provided argument
- */
-typedef void (*nfc_fd_callback_t)(void *arg);
-
-/**
- * @brief NFC device handle structure
- */
+/* protection configuration */
 typedef struct {
-    i2c_master_bus_handle_t i2c_bus;    /* I2C bus handle */
-    i2c_master_dev_handle_t i2c_dev;    /* I2C device handle */
-    gpio_num_t fd_pin;                  /* Field Detect pin */
-    bool initialized;                   /* Initialization flag */
-    TaskHandle_t notify_task;           /* Task to notify on FD interrupt */
-    nfc_fd_callback_t fd_callback;      /* Optional callback for FD interrupt */
-    void *fd_callback_arg;              /* Argument for FD callback */
-    volatile uint32_t fd_int_count;     /* FD interrupt counter */
-} nfc_handle_t;
+    uint8_t auth0;              /* nfc page where protection starts (0xff = disabled) */
+    bool nfc_read_prot;         /* true = read+write protected, false = write only */
+    uint8_t authlim;            /* auth attempts: 0=unlimited, 1-7 = 2^n attempts */
+    nfc_i2c_prot_t i2c_prot;    /* i2c access level for protected area */
+    bool sram_prot;             /* protect sram in pass-through mode */
+    uint8_t pwd[4];             /* 4-byte password */
+    uint8_t pack[2];            /* 2-byte password acknowledge */
+} nfc_prot_cfg_t;
 
-/**
- * @brief NFC session register structure
- */
+/* fd interrupt callback */
+typedef void (*nfc_fd_cb_t)(void *arg);
+
+/* handle */
 typedef struct {
-    uint8_t nc_reg;             /* NC_REG */
-    uint8_t last_ndef_block;    /* Last NDEF block */
-    uint8_t sram_mirror_block;  /* SRAM mirror block */
-    uint8_t wdt_ls;             /* Watchdog timer LS */
-    uint8_t wdt_ms;             /* Watchdog timer MS */
-    uint8_t i2c_clock_str;      /* I2C clock stretching */
-    uint8_t ns_reg;             /* NS_REG (status) */
-    uint8_t fixed;              /* Fixed value */
-} nfc_session_regs_t;
+    i2c_master_dev_handle_t dev;
+    gpio_num_t fd_pin;
+    TaskHandle_t notify_task;
+    nfc_fd_cb_t fd_cb;
+    void *fd_cb_arg;
+    volatile uint32_t fd_count;
+} nfc_t;
 
-/* ============================================================================
- * Function Prototypes
- * ============================================================================ */
+/* init/deinit */
+esp_err_t nfc_init(nfc_t *nfc, i2c_master_bus_handle_t bus, uint8_t addr, uint32_t freq_hz, gpio_num_t fd_pin);
+esp_err_t nfc_deinit(nfc_t *nfc);
 
-/**
- * @brief Initialize the NFC I2C driver
- * 
- * @param handle Pointer to NFC handle structure
- * @param dev i2c master device handle
- * @param fd_pin GPIO pin for Field Detect interrupt
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_init(nfc_handle_t *handle, i2c_master_dev_handle_t dev, gpio_num_t fd_pin);
+/* block read/write (16 bytes) */
+esp_err_t nfc_read_block(nfc_t *nfc, uint8_t block, uint8_t *data, bool release_lock);
+esp_err_t nfc_write_block(nfc_t *nfc, uint8_t block, const uint8_t *data, bool release_lock);
 
-/**
- * @brief Deinitialize the NFC driver
- * 
- * @param handle Pointer to NFC handle structure
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_deinit(nfc_handle_t *handle);
+/* session register read/write */
+esp_err_t nfc_read_reg(nfc_t *nfc, uint8_t reg, uint8_t *val);
+esp_err_t nfc_write_reg(nfc_t *nfc, uint8_t reg, uint8_t mask, uint8_t val);
 
-/**
- * @brief Set task to receive FD interrupt notifications
- * 
- * When an FD interrupt occurs, the specified task will receive a 
- * task notification (using xTaskNotifyFromISR).
- * 
- * @param handle Pointer to NFC handle structure
- * @param task Task handle to notify (use xTaskGetCurrentTaskHandle() for current task)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_set_fd_notify_task(nfc_handle_t *handle, TaskHandle_t task);
+/* status helpers */
+esp_err_t nfc_get_ns_reg(nfc_t *nfc, uint8_t *ns);
+esp_err_t nfc_get_nc_reg(nfc_t *nfc, uint8_t *nc);
+bool nfc_rf_present(nfc_t *nfc);
+esp_err_t nfc_i2c_unlock(nfc_t *nfc);  /* clear i2c_locked to allow rf access */
 
-/**
- * @brief Register callback for FD interrupt
- * 
- * The callback will be called from ISR context - keep it short!
- * 
- * @param handle Pointer to NFC handle structure
- * @param callback Callback function (called from ISR context)
- * @param arg User argument passed to callback
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_set_fd_callback(nfc_handle_t *handle, nfc_fd_callback_t callback, void *arg);
+/* fd pin interrupt */
+esp_err_t nfc_set_fd_callback(nfc_t *nfc, nfc_fd_cb_t cb, void *arg);
+esp_err_t nfc_set_fd_task(nfc_t *nfc, TaskHandle_t task);
+bool nfc_wait_fd(nfc_t *nfc, uint32_t timeout_ms);
+uint32_t nfc_fd_count(nfc_t *nfc);
+bool nfc_fd_pin_level(nfc_t *nfc);
 
-/**
- * @brief Wait for FD interrupt with timeout
- * 
- * Blocks until FD interrupt occurs or timeout expires.
- * Requires nfc_set_fd_notify_task() to be called first.
- * 
- * @param handle Pointer to NFC handle structure
- * @param timeout_ms Timeout in milliseconds (portMAX_DELAY for infinite)
- * @return true if interrupt occurred, false if timeout
- */
-bool nfc_wait_fd_interrupt(nfc_handle_t *handle, uint32_t timeout_ms);
+/* fd pin mode configuration */
+esp_err_t nfc_set_fd_mode(nfc_t *nfc, nfc_fd_off_t off_mode, nfc_fd_on_t on_mode);
+esp_err_t nfc_set_last_ndef_block(nfc_t *nfc, uint8_t block);
 
-/**
- * @brief Get FD interrupt count
- * 
- * @param handle Pointer to NFC handle structure
- * @return Number of FD interrupts since initialization
- */
-uint32_t nfc_get_fd_int_count(nfc_handle_t *handle);
+/* protection configuration
+ * note: auth0 uses nfc page address (i2c block * 4 + page offset within block)
+ * e.g. to protect from i2c block 16 onwards: auth0 = 16 * 4 = 64 = 0x40 */
+esp_err_t nfc_set_protection(nfc_t *nfc, const nfc_prot_cfg_t *cfg);
+esp_err_t nfc_disable_protection(nfc_t *nfc);
+esp_err_t nfc_get_protection(nfc_t *nfc, nfc_prot_cfg_t *cfg);
 
-/**
- * @brief Clear FD interrupt count
- * 
- * @param handle Pointer to NFC handle structure
- */
-void nfc_clear_fd_int_count(nfc_handle_t *handle);
+/* helper: convert i2c block to nfc page (first page of block) */
+static inline uint8_t nfc_block_to_page(uint8_t block) { return block * 4; }
+/* helper: convert nfc page to i2c block */
+static inline uint8_t nfc_page_to_block(uint8_t page) { return page / 4; }
 
-/**
- * @brief Read a 16-byte block from EEPROM or SRAM
- * 
- * @param handle Pointer to NFC handle structure
- * @param block_addr Block address (0x00-0x3A for 1k, 0x00-0x7A for 2k, 0xF8-0xFB for SRAM)
- * @param data Buffer to store read data (must be at least 16 bytes)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_read_block(nfc_handle_t *handle, uint8_t block_addr, uint8_t *data);
-
-/**
- * @brief Write a 16-byte block to EEPROM or SRAM
- * 
- * Note: EEPROM write requires ~4ms programming time after this function returns.
- * 
- * @param handle Pointer to NFC handle structure
- * @param block_addr Block address (0x00-0x3A for 1k, 0x00-0x7A for 2k, 0xF8-0xFB for SRAM)
- * @param data Data to write (must be 16 bytes)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_write_block(nfc_handle_t *handle, uint8_t block_addr, const uint8_t *data);
-
-/**
- * @brief Read a session register byte
- * 
- * @param handle Pointer to NFC handle structure
- * @param reg_addr Register address within session block (0x00-0x07)
- * @param value Pointer to store read value
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_read_register(nfc_handle_t *handle, uint8_t reg_addr, uint8_t *value);
-
-/**
- * @brief Write a session register byte with mask
- * 
- * Only bits set in the mask will be modified.
- * 
- * @param handle Pointer to NFC handle structure
- * @param reg_addr Register address within session block (0x00-0x07)
- * @param mask Bit mask (1 = modify this bit, 0 = keep existing)
- * @param value New value for masked bits
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_write_register(nfc_handle_t *handle, uint8_t reg_addr, uint8_t mask, uint8_t value);
-
-/**
- * @brief Read all session registers
- * 
- * @param handle Pointer to NFC handle structure
- * @param regs Pointer to session registers structure
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_read_session_registers(nfc_handle_t *handle, nfc_session_regs_t *regs);
-
-/**
- * @brief Check if RF field is present
- * 
- * @param handle Pointer to NFC handle structure
- * @param present Pointer to store result (true if field detected)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_is_rf_field_present(nfc_handle_t *handle, bool *present);
-
-/**
- * @brief Check if EEPROM write is in progress
- * 
- * @param handle Pointer to NFC handle structure
- * @param busy Pointer to store result (true if write in progress)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_is_write_busy(nfc_handle_t *handle, bool *busy);
-
-/**
- * @brief Wait for EEPROM write to complete
- * 
- * @param handle Pointer to NFC handle structure
- * @param timeout_ms Maximum time to wait in milliseconds
- * @return ESP_OK on success, ESP_ERR_TIMEOUT if timeout
- */
-esp_err_t nfc_wait_write_complete(nfc_handle_t *handle, uint32_t timeout_ms);
-
-/**
- * @brief Read the Field Detect (FD) pin state
- * 
- * @param handle Pointer to NFC handle structure
- * @return true if FD pin is high, false if low
- */
-bool nfc_read_fd_pin(nfc_handle_t *handle);
-
-/**
- * @brief Read multiple consecutive blocks
- * 
- * @param handle Pointer to NFC handle structure
- * @param start_block Starting block address
- * @param num_blocks Number of blocks to read
- * @param data Buffer to store read data (must be at least num_blocks * 16 bytes)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_read_blocks(nfc_handle_t *handle, uint8_t start_block, uint8_t num_blocks, uint8_t *data);
-
-/**
- * @brief Write multiple consecutive blocks
- * 
- * @param handle Pointer to NFC handle structure
- * @param start_block Starting block address
- * @param num_blocks Number of blocks to write
- * @param data Data to write (must be num_blocks * 16 bytes)
- * @return ESP_OK on success, error code otherwise
- */
-esp_err_t nfc_write_blocks(nfc_handle_t *handle, uint8_t start_block, uint8_t num_blocks, const uint8_t *data);
-
-/**
- * @brief Scan I2C bus for devices (debug helper)
- * 
- * Scans all 127 possible I2C addresses and reports found devices.
- * Useful for debugging wiring issues.
- * 
- * @param handle Pointer to initialized NFC handle structure
- */
-void nfc_i2c_scan(nfc_handle_t *handle);
+/* user data helpers (blocks 1+, leaves block 0 alone for uid/cc) */
+esp_err_t nfc_write_bytes(nfc_t *nfc, uint8_t start_block, const uint8_t *data, size_t len);
+esp_err_t nfc_read_bytes(nfc_t *nfc, uint8_t start_block, uint8_t *buf, size_t len);
+esp_err_t nfc_clear_blocks(nfc_t *nfc, uint8_t start_block, uint8_t count);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* NFC_H */
+#endif
