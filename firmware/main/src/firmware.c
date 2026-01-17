@@ -16,6 +16,7 @@
 #include <time.h>
 #include <string.h>
 #include <assert.h>
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/timers.h"
@@ -83,26 +84,44 @@ static void example_espnow_recv_cb(const esp_now_recv_info_t *recv_info, const u
 {
     example_espnow_event_t evt;
     example_espnow_event_recv_cb_t *recv_cb = &evt.info.recv_cb;
-    uint8_t * mac_addr = recv_info->src_addr;
-    uint8_t * des_addr = recv_info->des_addr;
+    uint8_t *mac_addr = recv_info->src_addr;
+    uint8_t *des_addr = recv_info->des_addr;
 
     if (mac_addr == NULL || data == NULL || len <= 0) {
         ESP_LOGE(TAG, "Receive cb arg error");
         return;
     }
 
-    if (IS_BROADCAST_ADDR(des_addr)) {
-        /* If added a peer with encryption before, the receive packets may be
-         * encrypted as peer-to-peer message or unencrypted over the broadcast channel.
-         * Users can check the destination address to distinguish it.
-         */
-        ESP_LOGI(TAG, "Receive broadcast ESPNOW data from "MACSTR"", MAC2STR(mac_addr));
+    int8_t rssi = recv_info->rx_ctrl->rssi;
+    int8_t noise_floor = recv_info->rx_ctrl->noise_floor;
+
+    float distance_m = powf(10.0f, (float)(ESPNOW_TX_POWER_DBM - rssi) / (10.0f * ESPNOW_PATH_LOSS_EXP));
+
+    const char *zone;
+    if (rssi >= RSSI_ZONE_VERY_CLOSE) {
+        zone = "VERY_CLOSE";
+    } else if (rssi >= RSSI_ZONE_CLOSE) {
+        zone = "CLOSE";
+    } else if (rssi >= RSSI_ZONE_MEDIUM) {
+        zone = "MEDIUM";
+    } else if (rssi >= RSSI_ZONE_FAR) {
+        zone = "FAR";
     } else {
-        ESP_LOGI(TAG, "Receive unicast ESPNOW data from "MACSTR"", MAC2STR(mac_addr));
+        zone = "EDGE";
+    }
+
+    if (IS_BROADCAST_ADDR(des_addr)) {
+        ESP_LOGI(TAG, "Recv broadcast from "MACSTR" | RSSI: %d dBm | Dist: %.1fm | Zone: %s",
+                 MAC2STR(mac_addr), rssi, distance_m, zone);
+    } else {
+        ESP_LOGI(TAG, "Recv unicast from "MACSTR" | RSSI: %d dBm | Dist: %.1fm | Zone: %s",
+                 MAC2STR(mac_addr), rssi, distance_m, zone);
     }
 
     evt.id = EXAMPLE_ESPNOW_RECV_CB;
     memcpy(recv_cb->mac_addr, mac_addr, ESP_NOW_ETH_ALEN);
+    recv_cb->rssi = rssi;
+    recv_cb->noise_floor = noise_floor;
     recv_cb->data = malloc(len);
     if (recv_cb->data == NULL) {
         ESP_LOGE(TAG, "Malloc receive data fail");

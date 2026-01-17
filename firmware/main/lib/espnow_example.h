@@ -23,6 +23,36 @@
 
 #define IS_BROADCAST_ADDR(addr) (memcmp(addr, s_example_broadcast_mac, ESP_NOW_ETH_ALEN) == 0)
 
+/*
+ * RSSI-based distance estimation using log-distance path loss model:
+ *
+ *   Distance (m) = 10 ^ ((TxPower - RSSI) / (10 * n))
+ *
+ * TxPower = calibrated RSSI at 1 meter (reference point)
+ * RSSI    = received signal strength from rx_ctrl
+ * n       = path loss exponent (environment-dependent)
+ *
+ * The model works because signal power decays logarithmically with distance.
+ * At 1m we measure TxPower. Each additional 10*n dB of loss doubles the distance.
+ * Example: If n=2.5 and we lose 25dB from TxPower, distance = 10^(25/25) = 10m
+ */
+#ifdef CONFIG_ESPNOW_TX_POWER_CALIBRATION
+#define ESPNOW_TX_POWER_DBM        CONFIG_ESPNOW_TX_POWER_CALIBRATION
+#else
+#define ESPNOW_TX_POWER_DBM        (-40)
+#endif
+
+#ifdef CONFIG_ESPNOW_PATH_LOSS_EXPONENT_X10
+#define ESPNOW_PATH_LOSS_EXP       (CONFIG_ESPNOW_PATH_LOSS_EXPONENT_X10 / 10.0f)
+#else
+#define ESPNOW_PATH_LOSS_EXP       2.5f
+#endif
+
+#define RSSI_ZONE_VERY_CLOSE       (-50)
+#define RSSI_ZONE_CLOSE            (-60)
+#define RSSI_ZONE_MEDIUM           (-70)
+#define RSSI_ZONE_FAR              (-80)
+
 typedef enum {
     EXAMPLE_ESPNOW_SEND_CB,
     EXAMPLE_ESPNOW_RECV_CB,
@@ -37,6 +67,8 @@ typedef struct {
     uint8_t mac_addr[ESP_NOW_ETH_ALEN];
     uint8_t *data;
     int data_len;
+    int8_t rssi;
+    int8_t noise_floor;
 } example_espnow_event_recv_cb_t;
 
 typedef union {

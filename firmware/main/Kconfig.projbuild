@@ -83,4 +83,25 @@ menu "Example Configuration"
         help
             ESPNOW wake interval
 
+    config ESPNOW_TX_POWER_CALIBRATION
+        int "Calibrated RSSI at 1 meter (dBm)"
+        default -40
+        range -100 0
+        help
+            RSSI value measured at exactly 1 meter distance. Used as reference for distance estimation.
+
+    config ESPNOW_PATH_LOSS_EXPONENT_X10
+        int "Path loss exponent (x10)"
+        default 25
+        range 20 40
+        help
+            Path loss exponent * 10. 20=free space, 25=indoor open, 30=office, 40=heavy walls.
+
+    config ESPNOW_PROXIMITY_THRESHOLD
+        int "Proximity threshold (dBm)"
+        default -65
+        range -100 -30
+        help
+            Minimum RSSI to consider a device in proximity. -50=very close, -65=moderate, -80=far.
+
 endmenu
