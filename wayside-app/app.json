@@ -12,8 +12,10 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "This app needs Bluetooth to communicate with ESP32 devices",
-        "NSBluetoothPeripheralUsageDescription": "This app needs Bluetooth to communicate with ESP32 devices"
-      }
+        "NSBluetoothPeripheralUsageDescription": "This app needs Bluetooth to communicate with ESP32 devices",
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.anonymous.waysideapp"
     },
     "android": {
       "adaptiveIcon": {
@@ -60,6 +62,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "de84970f-2fd5-4950-ad7d-17c9eaf92c07"
+      }
     }
   }
 }
