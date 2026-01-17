@@ -144,5 +144,6 @@ esp_err_t espnow_init(void);
 void espnow_set_config_key(const char *key);
 void espnow_set_config_bitmask(const uint8_t *data, uint16_t len, uint8_t similarity_threshold);
 void espnow_set_relay_url(const char *url);
+void espnow_reset_pairing(void);
 
 #endif /* ESPNOW_H */

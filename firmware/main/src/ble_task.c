@@ -18,7 +18,7 @@
 
 static const char *TAG = "ble_task";
 
-#define BLE_DEVICE_NAME             "ESP-BLE-2" // hardcoded for now
+#define BLE_DEVICE_NAME             "ESP-BLE-1" // hardcoded for now
 #define BLE_TASK_STACK_SIZE         8192
 #define BLE_TASK_PRIORITY           4
 #define BLE_QUEUE_SIZE              10
@@ -91,6 +91,7 @@ static uint16_t s_handle_table[BLE_IDX_NB];
 static uint16_t s_conn_id = 0;
 static esp_gatt_if_t s_gatts_if = 0;
 static bool s_is_connected = false;
+static uint16_t s_current_mtu = 23;
 static QueueHandle_t s_ble_queue = NULL;
 
 // --- ADVERTISING CONFIG ---
@@ -473,10 +474,12 @@ static void ble_task(void *pvParameter)
                 case BLE_EVT_DISCONNECT:
                     s_is_connected = false;
                     s_rx_buffer_len = 0; // Clear receive buffer
+                    espnow_reset_pairing();
                     ESP_LOGI(TAG, "Connection closed");
                     break;
 
                 case BLE_EVT_MTU_UPDATE:
+                    s_current_mtu = evt.info.mtu;
                     ESP_LOGI(TAG, "MTU updated to %d", evt.info.mtu);
                     break;
 
@@ -589,20 +592,41 @@ void ble_send_message(const char *message)
         return;
     }
 
-    esp_err_t ret = esp_ble_gatts_send_indicate(
-        s_gatts_if,
-        s_conn_id,
-        s_handle_table[IDX_CHAR_VAL_TX],
-        len,
-        (uint8_t *)message,
-        false  // false = notification (no ACK), true = indication (requires ACK)
-    );
+    // Chunk message based on MTU (ATT header is 3 bytes)
+    uint16_t max_chunk = s_current_mtu - 3;
+    if (max_chunk < 20) max_chunk = 20;
 
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to send notification: %s", esp_err_to_name(ret));
-    } else {
-        ESP_LOGI(TAG, "Sent: %s", message);
+    size_t offset = 0;
+    int chunk_num = 0;
+    while (offset < len) {
+        size_t chunk_len = len - offset;
+        if (chunk_len > max_chunk) {
+            chunk_len = max_chunk;
+        }
+
+        esp_err_t ret = esp_ble_gatts_send_indicate(
+            s_gatts_if,
+            s_conn_id,
+            s_handle_table[IDX_CHAR_VAL_TX],
+            chunk_len,
+            (uint8_t *)(message + offset),
+            false
+        );
+
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send chunk %d: %s", chunk_num, esp_err_to_name(ret));
+            return;
+        }
+
+        offset += chunk_len;
+        chunk_num++;
+
+        if (offset < len) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
     }
+
+    ESP_LOGI(TAG, "Sent %d bytes in %d chunks", (int)len, chunk_num);
 }
 
 bool ble_is_connected(void)

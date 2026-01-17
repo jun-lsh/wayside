@@ -58,6 +58,10 @@ void espnow_set_relay_url(const char *url) {
     xQueueSend(s_espnow_queue, &evt, portMAX_DELAY);
 }
 
+void espnow_reset_pairing(void) {
+    pairing_reset(&s_pairing_ctx);
+}
+
 /* ESPNOW sending callback function is called in WiFi task.
  * Users should not do lengthy operations from this task. Instead, post
  * necessary data to a queue and handle it from a lower priority task. */
