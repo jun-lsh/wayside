@@ -1,3 +1,15 @@
-idf_component_register(SRCS "app_bt.c"
-                    PRIV_REQUIRES bt nvs_flash
-                    INCLUDE_DIRS ".")
+idf_component_register(
+    SRCS 
+        "main.c"
+        "bt_task.c"
+        "drivers/nfc.c"
+    INCLUDE_DIRS 
+        "."
+        "drivers"
+    REQUIRES
+        bt
+        nvs_flash
+        esp_driver_gpio
+        esp_driver_i2c
+        esp_timer
+)
