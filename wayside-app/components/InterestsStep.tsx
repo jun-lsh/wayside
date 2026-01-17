@@ -62,7 +62,7 @@ export default function InterestsStep({ bleClient, onComplete }: InterestsStepPr
         .join('');
       
       // Sending: BITMASK:A1B2 (Example)
-      const command = `BITMASK:${hexString}`;
+      const command = `BITMASK:16:${hexString}`;
       
       console.log(`Sending bitmask: ${mask} as ${command}`);
 
