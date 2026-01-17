@@ -8,6 +8,7 @@
 #include "esp_now.h"
 #include "espnow.h"
 #include "pairing.h"
+#include "proximity.h"
 
 #define ESPNOW_MAXDELAY 512
 
@@ -115,7 +116,6 @@ static void espnow_task(void *pvParameter)
     ESP_LOGI(TAG, "ESP-NOW task started. Broadcasting DISABLED until key received.");
 
     while (1) {
-        /* Use timeout so pairing_tick can run periodically */
         if (xQueueReceive(s_espnow_queue, &evt, pdMS_TO_TICKS(PAIRING_REBROADCAST_MS)) == pdTRUE) {
             switch (evt.id) {
                 case ESPNOW_SEND_CB:
@@ -133,6 +133,8 @@ static void espnow_task(void *pvParameter)
                     pairing_handle_recv(&s_pairing_ctx, recv_cb->mac_addr, 
                                         recv_cb->data, recv_cb->data_len, recv_cb->rssi);
 
+                    proximity_update(recv_cb->rssi); // led, buzzer
+
                     free(recv_cb->data);
                     break;
                 }
@@ -146,7 +148,6 @@ static void espnow_task(void *pvParameter)
             }
         }
 
-        /* Run pairing tick for timeouts and periodic broadcasts */
         pairing_tick(&s_pairing_ctx);
     }
 }
@@ -159,7 +160,6 @@ esp_err_t espnow_init(void)
         return ESP_FAIL;
     }
 
-    /* Initialize ESPNOW and register sending and receiving callback function. */
     ESP_ERROR_CHECK( esp_now_init() );
     ESP_ERROR_CHECK( esp_now_register_send_cb(espnow_send_cb) );
     ESP_ERROR_CHECK( esp_now_register_recv_cb(espnow_recv_cb) );
@@ -167,10 +167,8 @@ esp_err_t espnow_init(void)
     ESP_ERROR_CHECK( esp_now_set_wake_window(CONFIG_ESPNOW_WAKE_WINDOW) );
     ESP_ERROR_CHECK( esp_wifi_connectionless_module_set_wake_interval(CONFIG_ESPNOW_WAKE_INTERVAL) );
 #endif
-    /* Set primary master key. */
     ESP_ERROR_CHECK( esp_now_set_pmk((uint8_t *)CONFIG_ESPNOW_PMK) );
 
-    /* Add broadcast peer information to peer list. */
     esp_now_peer_info_t *peer = malloc(sizeof(esp_now_peer_info_t));
     if (peer == NULL) {
         ESP_LOGE(TAG, "Malloc peer information fail");
@@ -187,14 +185,12 @@ esp_err_t espnow_init(void)
     ESP_ERROR_CHECK( esp_now_add_peer(peer) );
     free(peer);
 
-    /* Initialize pairing state machine */
     esp_err_t pairing_ret = pairing_init(&s_pairing_ctx);
     if (pairing_ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to initialize pairing: %s", esp_err_to_name(pairing_ret));
         return pairing_ret;
     }
 
-    /* Start ESP-NOW task */
     xTaskCreate(espnow_task, "espnow_task", 4096, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "ESP-NOW initialized");

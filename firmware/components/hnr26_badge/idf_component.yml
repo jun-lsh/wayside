@@ -1,0 +1,40 @@
+## IDF Component Manager Manifest File
+dependencies:
+    ## Required IDF version
+    idf:
+        version: ">=4.1.0"
+    # # Put list of dependencies here
+    # # For components maintained by Espressif:
+    # component: "~1.0.0"
+    # # For 3rd party components:
+    # username/component: ">=1.0.0,<2.0.0"
+    # username2/component2:
+    #   version: "~1.0.0"
+    #   # For transient dependencies `public` flag can be set.
+    #   # `public` flag doesn't have an effect dependencies of the `main` component.
+    #   # All dependencies of `main` are public by default.
+    #   public: true
+    nushackers/aw9523:
+        override_path: ../aw9523
+        require: public
+        version: ">=0.0.3"
+version: 0.0.3
+maintainers:
+    - Yik Jin (@yikjin) <yikjin@nushackers.org>
+description: Hack&Roll 2026 hardware badge I/O library
+license: MIT
+tags:
+    - badge
+    - hack_and_roll
+    - hack_and_roll_2026
+    - hackathon
+    - hnr26
+files:
+    use_gitignore: true
+url: https://github.com/nushackers/hnr26-badge-workshop
+repository: https://github.com/nushackers/hnr26-badge-workshop.git
+repository_info:
+    path: firmware/components/hnr26_badge
+documentation: https://nushackers.github.io/hnr26-badge-workshop/hnr26-badge/html/
+issues: https://github.com/nushackers/hnr26-badge-workshop/issues
+discussion: https://github.com/nushackers/hnr26-badge-workshop/discussions

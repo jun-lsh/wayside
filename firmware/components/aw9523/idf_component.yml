@@ -1,0 +1,42 @@
+## IDF Component Manager Manifest File
+dependencies:
+    ## Required IDF version
+    idf:
+        version: ">=4.1.0"
+    # # Put list of dependencies here
+    # # For components maintained by Espressif:
+    # component: "~1.0.0"
+    # # For 3rd party components:
+    # username/component: ">=1.0.0,<2.0.0"
+    # username2/component2:
+    #   version: "~1.0.0"
+    #   # For transient dependencies `public` flag can be set.
+    #   # `public` flag doesn't have an effect dependencies of the `main` component.
+    #   # All dependencies of `main` are public by default.
+    #   public: true
+version: 0.0.3
+maintainers:
+    - Yik Jin (@yikjin) <yikjin@nushackers.org>
+description: AW9523 GPIO expander component
+license: MIT
+tags:
+    - aw9523
+    - badge
+    - driver
+    - expander
+    - gpio
+    - hack_and_roll
+    - hack_and_roll_2026
+    - hackathon
+    - hnr26
+    - i2c
+    - led
+files:
+    use_gitignore: true
+url: https://github.com/nushackers/hnr26-badge-workshop
+repository: https://github.com/nushackers/hnr26-badge-workshop.git
+repository_info:
+    path: firmware/components/aw9523
+documentation: https://nushackers.github.io/hnr26-badge-workshop/aw9523/html/
+issues: https://github.com/nushackers/hnr26-badge-workshop/issues
+discussion: https://github.com/nushackers/hnr26-badge-workshop/discussions
