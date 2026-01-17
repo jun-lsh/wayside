@@ -1,20 +1,19 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { View, ScrollView, StyleSheet, TextInput } from 'react-native';
+import { View, ScrollView, StyleSheet, TouchableOpacity, Text } from 'react-native';
 import { BleUartClient } from '@/utils/ble-uart';
 import { ThemedText } from '@/components/themed-text';
 
 interface DashboardStepProps {
   bleClient: BleUartClient;
+  onStartUpload: () => void; // <--- New Prop
 }
 
-export default function DashboardStep({ bleClient }: DashboardStepProps) {
+export default function DashboardStep({ bleClient, onStartUpload }: DashboardStepProps) {
   const [logs, setLogs] = useState<string[]>([]);
   const scrollViewRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     // Start passive listening
-    // We assume the handshake/ack listeners from previous steps are removed
-    // or overwritten by this call.
     bleClient.startNotifications(
       (msg) => {
         const timestamp = new Date().toLocaleTimeString();
@@ -26,14 +25,23 @@ export default function DashboardStep({ bleClient }: DashboardStepProps) {
     );
 
     return () => {
-      // Optional: stop notifications if you leave this screen
-      // bleClient.stopNotifications();
+      // Cleanup handled by parent unmount or keep listening
     };
   }, [bleClient]);
 
   return (
     <View style={styles.container}>
-      <ThemedText type="title" style={styles.header}>Device Monitor</ThemedText>
+      
+      {/* Header Row */}
+      <View style={styles.headerContainer}>
+        <ThemedText type="title">Device Monitor</ThemedText>
+        
+        {/* New Button */}
+        <TouchableOpacity style={styles.actionButton} onPress={onStartUpload}>
+          <Text style={styles.actionButtonText}>+ Upload Selfie</Text>
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.terminal}>
         <ScrollView 
           ref={scrollViewRef}
@@ -54,7 +62,19 @@ export default function DashboardStep({ bleClient }: DashboardStepProps) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { fontSize: 20, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
+  headerContainer: { 
+    marginBottom: 15, 
+    alignItems: 'center', 
+    gap: 10 
+  },
+  actionButton: {
+    backgroundColor: '#673AB7', // Different color to distinguish
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  actionButtonText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
+  
   terminal: {
     flex: 1,
     backgroundColor: '#1e1e1e',

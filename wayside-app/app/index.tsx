@@ -7,21 +7,19 @@ import { BleUartClient } from '@/utils/ble-uart';
 import PairingStep from '../components/PairingStep';
 import InterestsStep from '../components/InterestsStep';
 import DashboardStep from '../components/DashboardStep';
+import SelfieUploadStep from '../components/SelfieUploadStep'; // <--- Import
 
-type AppStep = 'PAIRING' | 'INTERESTS' | 'DASHBOARD';
+// Updated Types
+type AppStep = 'PAIRING' | 'INTERESTS' | 'DASHBOARD' | 'SELFIE_UPLOAD';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>('PAIRING');
   
-  // Create the client once and persist it across re-renders
   const bleClientRef = useRef<BleUartClient>(new BleUartClient());
 
   useEffect(() => {
     const client = bleClientRef.current;
-    
-    // Initialize BLE
     client.initialize().then(() => console.log('BLE Init OK')).catch(console.error);
-
     return () => {
       client.destroy();
     };
@@ -46,7 +44,14 @@ export default function App() {
       case 'DASHBOARD':
         return (
           <DashboardStep 
-            bleClient={bleClientRef.current} 
+            bleClient={bleClientRef.current}
+            onStartUpload={() => setCurrentStep('SELFIE_UPLOAD')} // <--- Switch to new step
+          />
+        );
+      case 'SELFIE_UPLOAD':
+        return (
+          <SelfieUploadStep 
+            onCancel={() => setCurrentStep('DASHBOARD')} // <--- Return to dashboard
           />
         );
       default:
