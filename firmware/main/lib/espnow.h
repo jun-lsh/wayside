@@ -3,6 +3,7 @@
 
 #include "esp_now.h"
 #include "esp_err.h"
+#include "pairing.h"
 
 /* ESPNOW can work in both station and softap mode. It is configured in menuconfig. */
 #if CONFIG_ESPNOW_WIFI_MODE_STATION
@@ -51,7 +52,12 @@
 typedef enum {
     ESPNOW_SEND_CB,
     ESPNOW_RECV_CB,
+    ESPNOW_SET_KEY
 } espnow_event_id_t;
+
+typedef struct {
+    char key[PAIRING_KEY_MAX_LEN];
+} espnow_event_set_key_t;
 
 /* Send callback event data */
 typedef struct {
@@ -72,6 +78,7 @@ typedef struct {
 typedef union {
     espnow_event_send_cb_t send_cb;
     espnow_event_recv_cb_t recv_cb;
+    espnow_event_set_key_t set_key;
 } espnow_event_info_t;
 
 /* Event structure posted to ESP-NOW task */
@@ -86,6 +93,7 @@ enum {
     ESPNOW_DATA_UNICAST,
     ESPNOW_DATA_MAX,
 };
+
 
 /* ESP-NOW packet data structure */
 typedef struct {
@@ -121,5 +129,5 @@ extern const uint8_t espnow_broadcast_mac[ESP_NOW_ETH_ALEN];
  * @return ESP_OK on success, ESP_FAIL on error
  */
 esp_err_t espnow_init(void);
-
+void espnow_set_config_key(const char *key);
 #endif /* ESPNOW_H */

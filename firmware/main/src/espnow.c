@@ -19,6 +19,18 @@ const uint8_t espnow_broadcast_mac[ESP_NOW_ETH_ALEN] = { 0xFF, 0xFF, 0xFF, 0xFF,
 
 static pairing_ctx_t s_pairing_ctx;
 
+void espnow_set_config_key(const char *key) {
+    if (s_espnow_queue == NULL || key == NULL) return;
+
+    espnow_event_t evt;
+    evt.id = ESPNOW_SET_KEY;
+    // Safety copy
+    strncpy(evt.info.set_key.key, key, PAIRING_KEY_MAX_LEN - 1);
+    evt.info.set_key.key[PAIRING_KEY_MAX_LEN - 1] = '\0';
+    
+    xQueueSend(s_espnow_queue, &evt, portMAX_DELAY);
+}
+
 /* ESPNOW sending callback function is called in WiFi task.
  * Users should not do lengthy operations from this task. Instead, post
  * necessary data to a queue and handle it from a lower priority task. */
@@ -100,7 +112,7 @@ static void espnow_task(void *pvParameter)
 {
     espnow_event_t evt;
 
-    ESP_LOGI(TAG, "ESP-NOW task started");
+    ESP_LOGI(TAG, "ESP-NOW task started. Broadcasting DISABLED until key received.");
 
     while (1) {
         /* Use timeout so pairing_tick can run periodically */
@@ -124,6 +136,10 @@ static void espnow_task(void *pvParameter)
                     free(recv_cb->data);
                     break;
                 }
+                case ESPNOW_SET_KEY:
+                    ESP_LOGI(TAG, "Applying Public Key to Pairing Context");
+                    pairing_set_config(&s_pairing_ctx, evt.info.set_key.key);
+                    break;
                 default:
                     ESP_LOGE(TAG, "Unknown event id: %d", evt.id);
                     break;

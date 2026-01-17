@@ -16,17 +16,17 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    rsa_key_pair_t *global_keys = malloc(sizeof(rsa_key_pair_t));
-    if (global_keys == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate memory for keys");
-        return;
-    }
+    // rsa_key_pair_t *global_keys = malloc(sizeof(rsa_key_pair_t));
+    // if (global_keys == NULL) {
+    //     ESP_LOGE(TAG, "Failed to allocate memory for keys");
+    //     return;
+    // }
 
-    if (load_or_generate_keypair(global_keys) != 0) {
-        ESP_LOGE(TAG, "Key loading/generation failed, cannot start tasks.");
-        free(global_keys);
-        return;
-    }
+    // if (load_or_generate_keypair(global_keys) != 0) {
+    //     ESP_LOGE(TAG, "Key loading/generation failed, cannot start tasks.");
+    //     free(global_keys);
+    //     return;
+    // }
 
     wifi_init();
     espnow_init();

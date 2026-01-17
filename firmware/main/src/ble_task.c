@@ -12,10 +12,13 @@
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "ble_task.h"
+#include "espnow.h"   
+#include "nvs_flash.h"       // Added
+#include "nvs.h"   
 
 static const char *TAG = "ble_task";
 
-#define BLE_DEVICE_NAME             "ESP-BLE-1"
+#define BLE_DEVICE_NAME             "ESP-BLE-1" // hardcoded for now
 #define BLE_TASK_STACK_SIZE         8192
 #define BLE_TASK_PRIORITY           4
 #define BLE_QUEUE_SIZE              10
@@ -177,7 +180,36 @@ static void handle_complete_message(const char *message)
 {
     ESP_LOGI(TAG, "RX Message: %s", message);
 
-    // Example: Echo "pong" when "ping" is received
+     if (strncmp(message, "PUBKEY:", 7) == 0) {
+        const char *public_key = message + 7; 
+        ESP_LOGW(TAG, "PUBKEY (truncated): %.50s...", public_key); 
+        ESP_LOGI(TAG, "Received PUBKEY. Saving to NVS and configuring ESP-NOW.");
+        
+        // 1. Save to NVS
+        nvs_handle_t my_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+        if (err == ESP_OK) {
+            err = nvs_set_str(my_handle, "pubkey", public_key);
+            if(err == ESP_OK) {
+                err = nvs_commit(my_handle);
+                ESP_LOGI(TAG, "Key saved to NVS");
+            } else {
+                ESP_LOGE(TAG, "Failed to write key to NVS");
+            }
+            nvs_close(my_handle);
+        } else {
+            ESP_LOGE(TAG, "Error opening NVS handle");
+        }
+
+        // 2. Trigger ESP-NOW Broadcast via Queue
+        // We use the helper function declared in espnow.h (impl in espnow.c)
+        espnow_set_config_key(public_key);
+        
+        // Send acknowledgment
+        ble_send_message("PUBKEY_OK\n");
+        return;
+     }
+
     if (strcmp(message, "ping") == 0) {
         ble_send_message("pong\n");
     }
