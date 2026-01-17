@@ -193,7 +193,26 @@ static void nfc_init_if_connected(void)
 
 void app_main(void)
 {
-    esp_err_t ret = nvs_flash_init();
+    // temp
+    gpio_config_t gpio0_conf = {
+        .pin_bit_mask = (1ULL << GPIO_NUM_0),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    esp_err_t ret = gpio_config(&gpio0_conf);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure GPIO 0: %s", esp_err_to_name(ret));
+        return;
+    }
+    ret = gpio_set_level(GPIO_NUM_0, 1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set GPIO 0 high: %s", esp_err_to_name(ret));
+        return;
+    }
+
+    ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
@@ -230,7 +249,7 @@ void app_main(void)
         ESP_LOGW(TAG, "Proximity init failed: %s", esp_err_to_name(ret));
     }
 
-    nfc_init_if_connected();
+    // nfc_init_if_connected();
     wifi_init();
     espnow_init();
     ble_init();

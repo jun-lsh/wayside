@@ -25,11 +25,25 @@ void espnow_set_config_key(const char *key) {
 
     espnow_event_t evt;
     evt.id = ESPNOW_SET_KEY;
-    // Safety copy
     strncpy(evt.info.set_key.key, key, PAIRING_KEY_MAX_LEN - 1);
     evt.info.set_key.key[PAIRING_KEY_MAX_LEN - 1] = '\0';
     
     xQueueSend(s_espnow_queue, &evt, portMAX_DELAY);
+}
+
+void espnow_set_config_bitmask(const uint8_t *data, uint16_t len) {
+    if (s_espnow_queue == NULL || data == NULL || len == 0) return;
+    
+    espnow_event_t evt;
+    evt.id = ESPNOW_SET_BITMASK;
+    evt.info.set_bitmask.len = len;
+    evt.info.set_bitmask.data = malloc(len);
+    if (evt.info.set_bitmask.data == NULL) return;
+    memcpy(evt.info.set_bitmask.data, data, len);
+    
+    if (xQueueSend(s_espnow_queue, &evt, portMAX_DELAY) != pdTRUE) {
+        free(evt.info.set_bitmask.data);
+    }
 }
 
 /* ESPNOW sending callback function is called in WiFi task.
@@ -140,7 +154,12 @@ static void espnow_task(void *pvParameter)
                 }
                 case ESPNOW_SET_KEY:
                     ESP_LOGI(TAG, "Applying Public Key to Pairing Context");
-                    pairing_set_config(&s_pairing_ctx, evt.info.set_key.key);
+                    pairing_set_pubkey(&s_pairing_ctx, evt.info.set_key.key);
+                    break;
+                case ESPNOW_SET_BITMASK:
+                    ESP_LOGI(TAG, "Applying Bitmask (%d bytes)", evt.info.set_bitmask.len);
+                    pairing_set_bitmask(&s_pairing_ctx, evt.info.set_bitmask.data, evt.info.set_bitmask.len);
+                    free(evt.info.set_bitmask.data);
                     break;
                 default:
                     ESP_LOGE(TAG, "Unknown event id: %d", evt.id);

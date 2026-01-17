@@ -48,16 +48,21 @@
 #define RSSI_ZONE_MEDIUM           (-70)
 #define RSSI_ZONE_FAR              (-80)
 
-/* Event IDs for ESP-NOW callbacks */
 typedef enum {
     ESPNOW_SEND_CB,
     ESPNOW_RECV_CB,
-    ESPNOW_SET_KEY
+    ESPNOW_SET_KEY,
+    ESPNOW_SET_BITMASK
 } espnow_event_id_t;
 
 typedef struct {
     char key[PAIRING_KEY_MAX_LEN];
 } espnow_event_set_key_t;
+
+typedef struct {
+    uint8_t *data;
+    uint16_t len;
+} espnow_event_set_bitmask_t;
 
 /* Send callback event data */
 typedef struct {
@@ -74,11 +79,11 @@ typedef struct {
     int8_t noise_floor;
 } espnow_event_recv_cb_t;
 
-/* Union of event data types */
 typedef union {
     espnow_event_send_cb_t send_cb;
     espnow_event_recv_cb_t recv_cb;
     espnow_event_set_key_t set_key;
+    espnow_event_set_bitmask_t set_bitmask;
 } espnow_event_info_t;
 
 /* Event structure posted to ESP-NOW task */
@@ -130,4 +135,6 @@ extern const uint8_t espnow_broadcast_mac[ESP_NOW_ETH_ALEN];
  */
 esp_err_t espnow_init(void);
 void espnow_set_config_key(const char *key);
+void espnow_set_config_bitmask(const uint8_t *data, uint16_t len);
+
 #endif /* ESPNOW_H */

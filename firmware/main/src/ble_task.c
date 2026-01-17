@@ -176,45 +176,95 @@ static const esp_gatts_attr_db_t s_gatt_db[BLE_IDX_NB] = {
  * Process a complete message received from the Android device.
  * Add your application logic here.
  */
+static int hex_to_bytes(const char *hex, uint8_t *out, int max_len)
+{
+    int hex_len = strlen(hex);
+    if (hex_len % 2 != 0) return -1;
+    
+    int byte_len = hex_len / 2;
+    if (byte_len > max_len) return -1;
+    
+    for (int i = 0; i < byte_len; i++) {
+        char byte_str[3] = {hex[i * 2], hex[i * 2 + 1], '\0'};
+        char *endptr;
+        long val = strtol(byte_str, &endptr, 16);
+        if (*endptr != '\0') return -1;
+        out[i] = (uint8_t)val;
+    }
+    return byte_len;
+}
+
 static void handle_complete_message(const char *message)
 {
     ESP_LOGI(TAG, "RX Message: %s", message);
 
-     if (strncmp(message, "PUBKEY:", 7) == 0) {
+    if (strncmp(message, "BITMASK:", 8) == 0) {
+        const char *after_prefix = message + 8;
+        const char *colon = strchr(after_prefix, ':');
+        if (colon == NULL) {
+            ble_send_message("BITMASK_ERR:FORMAT\n");
+            return;
+        }
+        
+        int bits = atoi(after_prefix);
+        if (bits <= 0 || bits > 2048) {
+            ble_send_message("BITMASK_ERR:LEN\n");
+            return;
+        }
+        
+        int expected_bytes = (bits + 7) / 8;
+        const char *hex_data = colon + 1;
+        
+        uint8_t *binary = malloc(expected_bytes);
+        if (binary == NULL) {
+            ble_send_message("BITMASK_ERR:MEM\n");
+            return;
+        }
+        
+        int actual_bytes = hex_to_bytes(hex_data, binary, expected_bytes);
+        if (actual_bytes != expected_bytes) {
+            free(binary);
+            ble_send_message("BITMASK_ERR:DATA\n");
+            return;
+        }
+        
+        nvs_handle_t my_handle;
+        esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
+        if (err == ESP_OK) {
+            nvs_set_blob(my_handle, "bitmask", binary, actual_bytes);
+            nvs_commit(my_handle);
+            nvs_close(my_handle);
+        }
+        
+        espnow_set_config_bitmask(binary, actual_bytes);
+        free(binary);
+        
+        ble_send_message("BITMASK_OK\n");
+        return;
+    }
+
+    if (strncmp(message, "PUBKEY:", 7) == 0) {
         const char *public_key = message + 7; 
         ESP_LOGW(TAG, "PUBKEY (truncated): %.50s...", public_key); 
-        ESP_LOGI(TAG, "Received PUBKEY. Saving to NVS and configuring ESP-NOW.");
         
-        // 1. Save to NVS
         nvs_handle_t my_handle;
         esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
         if (err == ESP_OK) {
             err = nvs_set_str(my_handle, "pubkey", public_key);
-            if(err == ESP_OK) {
-                err = nvs_commit(my_handle);
-                ESP_LOGI(TAG, "Key saved to NVS");
-            } else {
-                ESP_LOGE(TAG, "Failed to write key to NVS");
+            if (err == ESP_OK) {
+                nvs_commit(my_handle);
             }
             nvs_close(my_handle);
-        } else {
-            ESP_LOGE(TAG, "Error opening NVS handle");
         }
 
-        // 2. Trigger ESP-NOW Broadcast via Queue
-        // We use the helper function declared in espnow.h (impl in espnow.c)
         espnow_set_config_key(public_key);
-        
-        // Send acknowledgment
         ble_send_message("PUBKEY_OK\n");
         return;
-     }
+    }
 
     if (strcmp(message, "ping") == 0) {
         ble_send_message("pong\n");
     }
-
-    // TODO: Add your custom message handling logic here
 }
 
 /**
