@@ -1,0 +1,16 @@
+dependencies:
+  hci_common_component:
+    dependencies: []
+    source:
+      path: /Users/linyicheng/esp/v5.5.2/esp-idf/examples/bluetooth/hci/hci_common_component
+      type: local
+    version: '*'
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+direct_dependencies:
+- hci_common_component
+manifest_hash: e8e47b8694e7c38b1dd974fe0571f3bb9d12876b4dbae421adb3fdbc5ca4ee1c
+target: esp32c3
+version: 2.0.0
