@@ -3,13 +3,14 @@ idf_component_register(
         "main.c"
         "drivers/nfc.c"
         "drivers/name.c"
+        "drivers/adc.c"
     INCLUDE_DIRS 
         "."
         "drivers"
     REQUIRES
-        bt
         nvs_flash
+        esp_adc
         esp_driver_gpio
         esp_driver_i2c
-        esp_timer
+        esp_driver_tsens
 )

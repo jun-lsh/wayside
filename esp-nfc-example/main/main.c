@@ -13,6 +13,7 @@
 
 #include "drivers/nfc.h"
 #include "drivers/name.h"
+#include "drivers/adc.h"
 #include "definitions.h"
 
 static const char *TAG = "main";
@@ -22,6 +23,9 @@ static const char *TAG = "main";
 static nfc_t nfc;
 static i2c_master_bus_handle_t i2c_bus;
 static volatile uint32_t uptime_seconds = 0;
+
+static adc_ctx_t adc;
+static temp_sensor_ctx_t temp_sensor;
 
 /* memory layout:
  * block 0   - uid, lock bytes, cc (read only / dont touch)
@@ -53,6 +57,24 @@ static void show_protection(void)
                  cfg.auth0, cfg.auth0, nfc_page_to_block(cfg.auth0));
         ESP_LOGI(TAG, "  nfc_read_prot=%d, authlim=%d", cfg.nfc_read_prot, cfg.authlim);
         ESP_LOGI(TAG, "  i2c_prot=%d, sram_prot=%d", cfg.i2c_prot, cfg.sram_prot);
+    }
+}
+
+/* monitor task - logs vbat and temperature every 5 seconds */
+static void monitor_task(void *arg)
+{
+    ESP_LOGI(TAG, "monitor task running");
+    
+    while (1) {
+        int vbat_mv = 0;
+        float temp_c = 0;
+        
+        adc_read_voltage(&adc, VBAT_ADC_CHANNEL, &vbat_mv);
+        temp_sensor_read(&temp_sensor, &temp_c);
+        
+        ESP_LOGI(TAG, "VBAT=%dmV temp=%.1fC", vbat_mv, temp_c);
+        
+        vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
 
@@ -183,6 +205,21 @@ void app_main(void)
 
     ESP_LOGI(TAG, "device name: %s", device_name);
     
+    /* init adc */
+    ret = adc_init(&adc, ADC_UNIT_1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "adc init failed");
+        return;
+    }
+    adc_config_channel(&adc, VBAT_ADC_CHANNEL, ADC_ATTEN_DB_12);
+    
+    /* init temp sensor */
+    ret = temp_sensor_init(&temp_sensor, 10, 80);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "temp sensor init failed");
+        return;
+    }
+    
     /* init i2c bus */
     i2c_master_bus_config_t bus_cfg = {
         .i2c_port = I2C_NUM_0,
@@ -214,8 +251,9 @@ void app_main(void)
                  block0[4], block0[5], block0[6]);
     }
     
-    /* start task */
+    /* start tasks */
     xTaskCreate(nfc_task, "nfc", 4096, NULL, 5, NULL);
+    xTaskCreate(monitor_task, "monitor", 2048, NULL, 3, NULL);
     
     ESP_LOGI(TAG, "ready - scan with phone!");
 }
