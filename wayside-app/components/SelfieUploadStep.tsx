@@ -1,4 +1,3 @@
-import 'react-native-get-random-values';
 import React, { useState, useRef } from 'react';
 import { 
   View, 
@@ -12,19 +11,26 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
+import * as SecureStore from 'expo-secure-store';
+import { RSA } from 'react-native-rsa-native';
 import CryptoJS from 'crypto-js';
 import { ThemedText } from '@/components/themed-text';
 import { supabase } from '@/utils/supabase';
+import { BleUartClient } from '@/utils/ble-uart';
+import { sendAndWaitForAck } from '@/utils/ble-helpers';
+
+const PARTNER_KEY_STORAGE = 'partner_public_key';
 
 interface SelfieUploadStepProps {
+  bleClient: BleUartClient;
   onCancel: () => void;
+  onComplete: () => void;
 }
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const CAMERA_SIZE = SCREEN_WIDTH * 0.7;
 
-export default function SelfieUploadStep({ onCancel }: SelfieUploadStepProps) {
+export default function SelfieUploadStep({ bleClient, onCancel, onComplete }: SelfieUploadStepProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   
@@ -35,6 +41,7 @@ export default function SelfieUploadStep({ onCancel }: SelfieUploadStepProps) {
   
   // Result State
   const [uploadResult, setUploadResult] = useState<{ key: string; publicUrl: string } | null>(null);
+  const [bleSent, setBleSent] = useState(false);
 
   if (!permission) {
     // Camera permissions are still loading
@@ -120,10 +127,25 @@ const processAndUpload = async () => {
         .from('wayside-transfers')
         .getPublicUrl(fileName);
 
-      setUploadResult({
-        key: secretKey,
-        publicUrl: urlData.publicUrl
-      });
+      const result = { key: secretKey, publicUrl: urlData.publicUrl };
+      setUploadResult(result);
+
+      // Now encrypt and send to badge
+      setLoadingMessage('Sending to badge...');
+      
+      const partnerKey = await SecureStore.getItemAsync(PARTNER_KEY_STORAGE);
+      if (!partnerKey) {
+        Alert.alert('No Partner', 'No partner key found. Wait for badge pairing to complete.');
+        return;
+      }
+
+      // Encrypt URL|key payload with partner's RSA public key
+      const payload = `${result.publicUrl}|${result.key}`;
+      const encryptedPayload = await RSA.encrypt(payload, partnerKey);
+      
+      // Send over BLE and wait for ack
+      await sendAndWaitForAck(bleClient, `ENC_URL:${encryptedPayload}`, 'ENC_URL_OK');
+      setBleSent(true);
 
     } catch (err: any) {
       console.error("Full Error Object:", err);
@@ -136,6 +158,7 @@ const processAndUpload = async () => {
   const resetFlow = () => {
     setCapturedImage(null);
     setUploadResult(null);
+    setBleSent(false);
   };
 
   // --- Render ---
@@ -153,7 +176,9 @@ const processAndUpload = async () => {
   if (uploadResult) {
     return (
       <View style={styles.container}>
-        <ThemedText type="title" style={styles.title}>Upload Complete</ThemedText>
+        <ThemedText type="title" style={styles.title}>
+          {bleSent ? 'Sent to Partner!' : 'Upload Complete'}
+        </ThemedText>
         
         <View style={styles.resultBox}>
           <ThemedText type="defaultSemiBold" style={{color:'#000'}}>Decryption Key:</ThemedText>
@@ -168,10 +193,12 @@ const processAndUpload = async () => {
         </View>
 
         <ThemedText style={styles.infoText}>
-          These credentials can now be transmitted to the BLE device.
+          {bleSent 
+            ? 'Your encrypted selfie URL has been sent to your partner via the badge.'
+            : 'Upload complete but failed to send to badge.'}
         </ThemedText>
 
-        <TouchableOpacity onPress={onCancel} style={styles.button}>
+        <TouchableOpacity onPress={bleSent ? onComplete : onCancel} style={styles.button}>
           <Text style={styles.buttonText}>Done</Text>
         </TouchableOpacity>
       </View>

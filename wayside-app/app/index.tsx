@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import { ThemedView } from '@/components/themed-view';
@@ -14,6 +15,7 @@ type AppStep = 'PAIRING' | 'INTERESTS' | 'DASHBOARD' | 'SELFIE_UPLOAD';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>('PAIRING');
+  const [selfieUploadComplete, setSelfieUploadComplete] = useState(false);
   
   const bleClientRef = useRef<BleUartClient>(new BleUartClient());
 
@@ -45,13 +47,19 @@ export default function App() {
         return (
           <DashboardStep 
             bleClient={bleClientRef.current}
-            onStartUpload={() => setCurrentStep('SELFIE_UPLOAD')} // <--- Switch to new step
+            onStartUpload={() => setCurrentStep('SELFIE_UPLOAD')}
+            selfieUploadComplete={selfieUploadComplete}
           />
         );
       case 'SELFIE_UPLOAD':
         return (
           <SelfieUploadStep 
-            onCancel={() => setCurrentStep('DASHBOARD')} // <--- Return to dashboard
+            bleClient={bleClientRef.current}
+            onCancel={() => setCurrentStep('DASHBOARD')}
+            onComplete={() => {
+              setSelfieUploadComplete(true);
+              setCurrentStep('DASHBOARD');
+            }}
           />
         );
       default:
