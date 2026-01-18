@@ -3,7 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, StyleSheet,
 import * as SecureStore from 'expo-secure-store';
 import { RSA } from 'react-native-rsa-native';
 import { BleUartClient } from '@/utils/ble-uart';
-import { sendAndWaitForAck } from '@/utils/ble-helpers';
+import { sendAndWaitForAck, sendAndWaitForAckPairing } from '@/utils/ble-helpers';
 import { ThemedText } from '@/components/themed-text';
 
 const KEYPAIR_STORAGE_KEY = 'rsa_keypair';
@@ -36,7 +36,9 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
 
       // 2. Generate Keys
       setStatus('generating');
+      // 1024 bits is good for embedded. 2048 might be too slow for ESP32 decryption.
       const keys = await RSA.generateKeys(1024);
+      
       await SecureStore.setItemAsync(KEYPAIR_STORAGE_KEY, JSON.stringify({
         publicKey: keys.public,
         privateKey: keys.private,
