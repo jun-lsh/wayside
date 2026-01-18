@@ -61,8 +61,6 @@ export const sendAndWaitForAck = (
   });
 };
 
-import { BleUartClient } from '@/utils/ble-uart';
-
 // Helper to pause execution (allows ESP32 buffer to clear)
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
