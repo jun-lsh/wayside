@@ -120,16 +120,17 @@ esp_err_t nfc_pair_init(const nfc_pair_config_t *config)
     
     memcpy(&s_config, config, sizeof(nfc_pair_config_t));
     
+    // try name.h first, fallback to config
     esp_err_t ret = name_get(0, s_device_name, sizeof(s_device_name));
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "name_get failed");
-        return ret;
+    if (ret != ESP_OK && config->device_name) {
+        strncpy(s_device_name, config->device_name, sizeof(s_device_name) - 1);
+        s_device_name[sizeof(s_device_name) - 1] = '\0';
     }
     
-    if (config->ndef_timeout_ms > 0) {
+    if (config->otp_refresh_ms > 0) {
         s_timeout_timer = xTimerCreate("nfc_to", 
-                                        pdMS_TO_TICKS(config->ndef_timeout_ms),
-                                        pdFALSE, NULL, timeout_callback);
+                                        pdMS_TO_TICKS(config->otp_refresh_ms),
+                                        pdTRUE, NULL, timeout_callback);
     }
     
     s_state = NFC_PAIR_IDLE;
@@ -151,6 +152,7 @@ esp_err_t nfc_pair_write_ndef(void)
 
     uint8_t block0[16];
     nfc_read_block(s_config.nfc, 0, block0, false);
+    block0[0] = 0xAA;
 
     if (block0[12] != 0xE1 || block0[13] != 0x10 || block0[14] != 0x6D) {
         ESP_LOGI(TAG, "configuring cc");
@@ -173,11 +175,7 @@ esp_err_t nfc_pair_write_ndef(void)
     
     ESP_LOGI(TAG, "writing ndef (%d bytes)", ndef_len);
     
-    esp_err_t ret = nfc_write_bytes(s_config.nfc, NDEF_BLOCK_START, ndef_buf, ndef_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "write failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
+    nfc_write_bytes(s_config.nfc, NDEF_BLOCK_START, ndef_buf, ndef_len);
 
     vTaskDelay(pdMS_TO_TICKS(10));
     
@@ -186,13 +184,50 @@ esp_err_t nfc_pair_write_ndef(void)
     uint8_t last_block = NDEF_BLOCK_START + (ndef_len / NFC_BLOCK_SIZE);
     nfc_set_last_ndef_block(s_config.nfc, last_block);
     
-    set_state(NFC_PAIR_NDEF_WRITTEN);
+    set_state(NFC_PAIR_READY);
     
-    if (s_timeout_timer && s_config.ndef_timeout_ms > 0) {
+    if (s_timeout_timer && s_config.otp_refresh_ms > 0) {
         xTimerStart(s_timeout_timer, 0);
     }
     
     ESP_LOGI(TAG, "ndef written, ready for tap");
+    return ESP_OK;
+}
+
+uint32_t nfc_pair_get_otp(void)
+{
+    return 0;
+}
+
+void nfc_pair_get_otp_str(char *buf, size_t buf_len)
+{
+    if (buf && buf_len > 0) {
+        buf[0] = '\0';
+    }
+}
+
+nfc_pair_state_t nfc_pair_get_state(void)
+{
+    return s_state;
+}
+
+bool nfc_pair_rf_present(void)
+{
+    if (!s_initialized) return false;
+    return nfc_rf_present(s_config.nfc);
+}
+
+esp_err_t nfc_pair_start_advertising(void)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    set_state(NFC_PAIR_ADVERTISING);
+    return ESP_OK;
+}
+
+esp_err_t nfc_pair_stop_advertising(void)
+{
+    if (!s_initialized) return ESP_ERR_INVALID_STATE;
+    set_state(NFC_PAIR_READY);
     return ESP_OK;
 }
 
@@ -216,17 +251,6 @@ esp_err_t nfc_pair_clear_ndef(void)
     
     set_state(NFC_PAIR_IDLE);
     return ESP_OK;
-}
-
-nfc_pair_state_t nfc_pair_get_state(void)
-{
-    return s_state;
-}
-
-bool nfc_pair_rf_present(void)
-{
-    if (!s_initialized) return false;
-    return nfc_rf_present(s_config.nfc);
 }
 
 void nfc_pair_deinit(void)

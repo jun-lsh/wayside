@@ -13,7 +13,7 @@
         "@supabase/supabase-js": "^2.90.1",
         "@types/crypto-js": "^4.2.2",
         "crypto-js": "^4.2.0",
-        "expo": "~54.0.31",
+        "expo": "^54.0.31",
         "expo-camera": "~17.0.10",
         "expo-constants": "~18.0.13",
         "expo-file-system": "~19.0.21",

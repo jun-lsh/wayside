@@ -30,10 +30,16 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
     });
 
     initNfc().then(supported => {
+      console.log('NFC supported:', supported);  // Add this
       setNfcSupported(supported);
       if (supported) {
-        isNfcEnabled().then(setNfcEnabled);
+        isNfcEnabled().then(enabled => {
+          console.log('NFC enabled:', enabled);  // Add this
+          setNfcEnabled(enabled);
+        });
       }
+    }).catch(err => {
+      console.log('NFC init error:', err);  // Add this
     });
 
     return () => {
