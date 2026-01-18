@@ -42,7 +42,7 @@ static uint8_t s_rx_buffer[RX_BUFFER_SIZE];
 static int s_rx_buffer_len = 0;
 
 // Message delimiter (matches React Native config.messageDelimiter)
-static const char DELIMITER = '\r';
+static const char DELIMITER = BLE_MESSAGE_DELIMITER_CHAR;
 
 // --- NORDIC UART SERVICE UUIDS (Little Endian) ---
 // Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
@@ -253,13 +253,13 @@ static void handle_complete_message(const char *message)
         const char *after_prefix = message + 8;
         const char *colon = strchr(after_prefix, ':');
         if (colon == NULL) {
-            ble_send_message("BITMASK_ERR:FORMAT\r");
+            ble_send_message("BITMASK_ERR:FORMAT" BLE_MESSAGE_DELIMITER_STR);
             return;
         }
         
         int bits = atoi(after_prefix);
         if (bits <= 0 || bits > 2048) {
-            ble_send_message("BITMASK_ERR:LEN\r");
+            ble_send_message("BITMASK_ERR:LEN" BLE_MESSAGE_DELIMITER_STR);
             return;
         }
         
@@ -285,14 +285,14 @@ static void handle_complete_message(const char *message)
         
         uint8_t *binary = malloc(expected_bytes);
         if (binary == NULL) {
-            ble_send_message("BITMASK_ERR:MEM\r");
+            ble_send_message("BITMASK_ERR:MEM" BLE_MESSAGE_DELIMITER_STR);
             return;
         }
         
         char *hex_copy = malloc(hex_len + 1);
         if (hex_copy == NULL) {
             free(binary);
-            ble_send_message("BITMASK_ERR:MEM\r");
+            ble_send_message("BITMASK_ERR:MEM" BLE_MESSAGE_DELIMITER_STR);
             return;
         }
         memcpy(hex_copy, hex_data, hex_len);
@@ -302,7 +302,7 @@ static void handle_complete_message(const char *message)
         free(hex_copy);
         if (actual_bytes != expected_bytes) {
             free(binary);
-            ble_send_message("BITMASK_ERR:DATA\r");
+            ble_send_message("BITMASK_ERR:DATA" BLE_MESSAGE_DELIMITER_STR);
             return;
         }
         
@@ -318,7 +318,7 @@ static void handle_complete_message(const char *message)
         espnow_set_config_bitmask(binary, actual_bytes, similarity_threshold);
         free(binary);
         
-        ble_send_message("BITMASK_OK\r");
+        ble_send_message("BITMASK_OK" BLE_MESSAGE_DELIMITER_STR);
         return;
     }
 
@@ -337,7 +337,7 @@ static void handle_complete_message(const char *message)
         }
 
         espnow_set_config_key(public_key);
-        ble_send_message("PUBKEY_OK\r");
+        ble_send_message("PUBKEY_OK" BLE_MESSAGE_DELIMITER_STR);
         return;
     }
 
@@ -345,12 +345,12 @@ static void handle_complete_message(const char *message)
         const char *url_data = message + 8;
         ESP_LOGI(TAG, "Received encrypted URL to relay");
         espnow_set_relay_url(url_data);
-        ble_send_message("ENC_URL_OK\r");
+        ble_send_message("ENC_URL_OK" BLE_MESSAGE_DELIMITER_STR);
         return;
     }
 
     if (strcmp(message, "ping") == 0) {
-        ble_send_message("pong\r");
+        ble_send_message("pong" BLE_MESSAGE_DELIMITER_STR);
     }
 }
 

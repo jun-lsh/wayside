@@ -6,6 +6,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#define BLE_MESSAGE_DELIMITER_CHAR '\r'
+#define BLE_MESSAGE_DELIMITER_STR "\r"
+
 #ifdef __cplusplus
 extern "C" {
 #endif

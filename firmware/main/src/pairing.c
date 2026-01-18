@@ -371,7 +371,7 @@ void pairing_tick(pairing_ctx_t *ctx)
                 
                 if (ctx->kex.key_confirmed && !ctx->kex.notified_phone) {
                     char msg[PAIRING_KEY_MAX_LEN + 16];
-                    snprintf(msg, sizeof(msg), "PARTNER:%s\r", ctx->partner_public_key);
+                    snprintf(msg, sizeof(msg), "PARTNER:%s" BLE_MESSAGE_DELIMITER_STR, ctx->partner_public_key);
                     ble_send_message(msg);
                     ctx->kex.notified_phone = true;
                     ESP_LOGI(TAG, "Notified phone of partner pubkey");
@@ -384,7 +384,7 @@ void pairing_tick(pairing_ctx_t *ctx)
                 
                 if (ctx->kex.has_incoming_url) {
                     char msg[KEY_EXCHANGE_URL_MAX_LEN + 16];
-                    snprintf(msg, sizeof(msg), "RECV_URL:%s\r", ctx->kex.incoming_url);
+                    snprintf(msg, sizeof(msg), "RECV_URL:%s" BLE_MESSAGE_DELIMITER_STR, ctx->kex.incoming_url);
                     ble_send_message(msg);
                     ctx->kex.has_incoming_url = false;
                     ESP_LOGI(TAG, "Sent received URL to phone");

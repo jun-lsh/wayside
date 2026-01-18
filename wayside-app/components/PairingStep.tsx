@@ -59,7 +59,12 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
 
       // send public key to device
       setStatus('sending');
-      await sendAndWaitForAck(bleClient, `PUBKEY:${keys.public}`, 'PUBKEY_OK');
+
+      // iOS BLE payload handling can be weird with CRLF, so normalize to CR.
+      const normalizedPublicKey = keys.public.replace(/\r\n/g, '\n').replace(/\n/g, '\n');
+
+      // Wait for "PUBKEY_OK"
+      await sendAndWaitForAck(bleClient, `PUBKEY:${normalizedPublicKey}`, 'PUBKEY_OK');
 
       // done!
       onComplete();
