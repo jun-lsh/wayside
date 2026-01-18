@@ -145,8 +145,8 @@ export default function SelfieUploadStep({ bleClient, onCancel, onComplete }: Se
             // Format: PUBLIC_URL|RSA_ENCRYPTED_KEY
             // Note: The recipient (badge) needs to split this string by '|', 
             // use the URL as is, and decrypt the second part to get the AES key.
-            const payload = `${result.publicUrl}|${encryptedKey}`;
-
+            let payload = `${result.publicUrl}|${encryptedKey}`;
+            payload = payload.replace(/\r\n/g, '\n').replace(/\n/g, '\n');
             // 3. Send via BLE
             // Ensure your BLE client handles long messages (chunking) if this exceeds ~20-500 bytes
             await sendAndWaitForAck(bleClient, `ENC_URL:${payload}`, 'ENC_URL_OK');
