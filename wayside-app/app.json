@@ -13,7 +13,9 @@
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "This app needs Bluetooth to communicate with ESP32 devices",
         "NSBluetoothPeripheralUsageDescription": "This app needs Bluetooth to communicate with ESP32 devices",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NFCReaderUsageDescription": "This app uses NFC to read data from NFC tags.",
+        "com.apple.developer.nfc.readersession.iso7816.select-identifiers": ["D2760000850101"]
       },
       "bundleIdentifier": "com.anonymous.waysideapp"
     },
@@ -36,7 +38,8 @@
         "android.permission.BLUETOOTH_ADMIN",
         "android.permission.BLUETOOTH_SCAN",
         "android.permission.BLUETOOTH_CONNECT",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.NFC"
       ],
       "package": "com.anonymous.waysideapp"
     },
