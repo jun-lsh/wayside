@@ -71,7 +71,7 @@ export default function DashboardStep({
   useEffect(() => {
     const handleMsg = async (rawMsg: string) => {
       const msg = rawMsg.replace(/^[\s\r\n]+|[\s\r\n]+$/g, '');
-
+      console.log(msg)
       // PARTNER FOUND
       if (msg.startsWith('PARTNER:')) {
         const partnerKey = msg.replace('PARTNER:', '').trim();
@@ -199,8 +199,8 @@ export default function DashboardStep({
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <ThemedText type="subtitle" style={{marginBottom: 10}}>Match Found!</ThemedText>
-            <ThemedText style={{textAlign: 'center', marginBottom: 20}}>
+            <ThemedText type="subtitle" style={{marginBottom: 10, color:'#000'}}>Match Found!</ThemedText>
+            <ThemedText style={{textAlign: 'center', marginBottom: 20, color:'#000'}}>
               Found someone nearby with similar interests! Do you want to share where you're at?
             </ThemedText>
             <TouchableOpacity style={styles.primaryButton} onPress={handleMatchConfirm}>
