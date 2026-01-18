@@ -47,7 +47,7 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
       // const flattenedKey = keys.public.replace(/(\r\n|\n|\r)/gm, "");
       
       // Wait for "PUBKEY_OK"
-      await sendAndWaitForAck(bleClient, `PUBKEY:${keys}`, 'PUBKEY_OK');
+      await sendAndWaitForAck(bleClient, `PUBKEY:${keys.public}`, 'PUBKEY_OK');
 
       // Done
       onComplete();
