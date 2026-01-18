@@ -125,8 +125,7 @@ static void proximity_task(void *pvParameter)
 
     while (1) {
         now = xTaskGetTickCount();
-        // TODO: Re-enable when LED logging is fixed
-        // hnr26_badge_update_virtual_pins_state();
+        hnr26_badge_update_virtual_pins_state();
         if (xQueueReceive(s_state.queue, &evt, pdMS_TO_TICKS(PROXIMITY_LOOP_PERIOD_MS)) == pdTRUE) {
             if (xSemaphoreTake(s_state.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
                 update_rssi_average(evt.rssi);
@@ -140,8 +139,7 @@ static void proximity_task(void *pvParameter)
         }
 
         if (!s_state.enabled) {
-            // TODO: Re-enable when LED logging is fixed
-            // all_leds_off();
+            all_leds_off();
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -150,8 +148,7 @@ static void proximity_task(void *pvParameter)
             if (s_state.current_zone != PROXIMITY_ZONE_UNKNOWN) {
                 ESP_LOGD(TAG, "RSSI timeout, entering UNKNOWN zone");
                 s_state.current_zone = PROXIMITY_ZONE_UNKNOWN;
-                // TODO: Re-enable when LED logging is fixed
-                // all_leds_off();
+                all_leds_off();
                 buzzer_stop();
             }
             continue;
@@ -168,10 +165,9 @@ static void proximity_task(void *pvParameter)
             s_state.led_state = !s_state.led_state;
             s_state.last_toggle_time = now;
 
-            // TODO: Re-enable when LED logging is fixed
-            // if (s_state.config.enable_leds) {
-            //     set_leds(params->led_count, s_state.led_state);
-            // }
+            if (s_state.config.enable_leds) {
+                set_leds(params->led_count, s_state.led_state);
+            }
 
             if (s_state.led_state && s_state.config.enable_buzzer) {
                 buzzer_beep(params->blink_period_ms / 2, 0, 1);
@@ -223,8 +219,8 @@ esp_err_t proximity_init(const proximity_config_t *config)
         return ESP_ERR_NO_MEM;
     }
 
-    s_state.initialized = false;
-    s_state.enabled = false;
+    s_state.initialized = true;
+    s_state.enabled = true;
     s_state.current_zone = PROXIMITY_ZONE_UNKNOWN;
     s_state.last_rssi_time = xTaskGetTickCount();
     s_state.last_toggle_time = xTaskGetTickCount();
@@ -263,8 +259,7 @@ void proximity_enable(bool enable)
     if (xSemaphoreTake(s_state.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         s_state.enabled = enable;
         if (!enable) {
-            // TODO: Re-enable when LED logging is fixed
-            // all_leds_off();
+            all_leds_off();
             buzzer_stop();
         }
         xSemaphoreGive(s_state.mutex);
