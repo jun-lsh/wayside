@@ -19,6 +19,7 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
   const [logs, setLogs] = useState<string[]>([]);
   const scrollViewRef = useRef<ScrollView>(null);
   
+  // Stores the "URL|ENCRYPTED_KEY" string
   const [receivedEncryptedPayload, setReceivedEncryptedPayload] = useState<string | null>(null);
   const [partnerSelfie, setPartnerSelfie] = useState<string | null>(null);
   const [decrypting, setDecrypting] = useState(false);
@@ -28,7 +29,9 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
     bleClient.startNotifications(
       async (msg) => {
         const timestamp = new Date().toLocaleTimeString();
-        setLogs((prev) => [...prev, `[${timestamp}] ${msg}`]);
+        // Filter out excessively long log messages to keep UI clean
+        const logMsg = msg.length > 50 ? `${msg.substring(0, 50)}...` : msg;
+        setLogs((prev) => [...prev, `[${timestamp}] ${logMsg}`]);
 
         if (msg.startsWith('PARTNER:')) {
           const partnerKey = msg.replace('PARTNER:', '').trim();
@@ -39,7 +42,7 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
         if (msg.startsWith('RECV_URL:')) {
           const payload = msg.replace('RECV_URL:', '').trim();
           setReceivedEncryptedPayload(payload);
-          setLogs((prev) => [...prev, `[${timestamp}] Partner's selfie received`]);
+          setLogs((prev) => [...prev, `[${timestamp}] Partner's selfie payload received`]);
         }
       },
       (err) => {
@@ -63,25 +66,47 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
     setDecryptError(null);
     
     try {
+      // 1. Get our Private Key
       const keypairJson = await SecureStore.getItemAsync(KEYPAIR_STORAGE_KEY);
-      if (!keypairJson) throw new Error('No keypair found');
+      if (!keypairJson) throw new Error('No local keypair found');
       const { privateKey } = JSON.parse(keypairJson);
 
-      const decrypted = await RSA.decrypt(receivedEncryptedPayload, privateKey);
-      const [url, aesKey] = decrypted.split('|');
-      if (!url || !aesKey) throw new Error('Invalid payload format');
+      // 2. Parse the Payload: URL | RSA_ENCRYPTED_KEY
+      const parts = receivedEncryptedPayload.split('|');
+      
+      if (parts.length < 2) {
+        throw new Error('Invalid payload format. Expected URL|KEY');
+      }
 
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch image');
-      const encryptedBase64 = await response.text();
+      const publicUrl = parts[0];
+      const encryptedAesKey = parts[1];
 
-      const decryptedBase64 = CryptoJS.AES.decrypt(encryptedBase64, aesKey).toString(CryptoJS.enc.Utf8);
-      if (!decryptedBase64) throw new Error('AES decryption failed');
+      // 3. Decrypt the AES Key using our Private RSA Key
+      // Note: RSA.decrypt expects the encrypted string (Base64)
+      const decryptedAesKey = await RSA.decrypt(encryptedAesKey, privateKey);
+      
+      if (!decryptedAesKey) throw new Error('Failed to decrypt AES key');
 
-      setPartnerSelfie(`data:image/jpeg;base64,${decryptedBase64}`);
+      // 4. Fetch the Encrypted Image Content
+      const response = await fetch(publicUrl);
+      if (!response.ok) throw new Error('Failed to fetch image file');
+      
+      // The file was uploaded as text/plain containing the AES encrypted string
+      const encryptedFileContent = await response.text();
+
+      // 5. Decrypt the Image Content using the AES Key
+      const bytes = CryptoJS.AES.decrypt(encryptedFileContent, decryptedAesKey);
+      const originalBase64 = bytes.toString(CryptoJS.enc.Utf8);
+
+      if (!originalBase64) throw new Error('AES decryption resulted in empty data');
+
+      setPartnerSelfie(`data:image/jpeg;base64,${originalBase64}`);
+      setLogs((prev) => [...prev, `[Success] Partner selfie decrypted!`]);
+
     } catch (err: any) {
       console.error('Failed to decrypt partner selfie:', err);
       setDecryptError(err.message || 'Failed to decrypt');
+      setLogs((prev) => [...prev, `[Error] ${err.message}`]);
     } finally {
       setDecrypting(false);
     }
