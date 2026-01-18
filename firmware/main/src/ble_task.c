@@ -6,19 +6,27 @@
 #include "freertos/queue.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_gatt_common_api.h"
 #include "esp_bt.h"
+#include "esp_bt_device.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatts_api.h"
 #include "esp_bt_defs.h"
 #include "esp_bt_main.h"
 #include "ble_task.h"
 #include "espnow.h"   
-#include "nvs_flash.h"       // Added
-#include "nvs.h"   
+#include "nvs_flash.h"
+#include "nvs.h"
+#include "name.h"
 
 static const char *TAG = "ble_task";
 
-#define BLE_DEVICE_NAME             "ESP-BLE-1" // hardcoded for now
+// device name buffer (populated from nvs via name.h)
+static char s_device_name[NAME_MAX_LEN] = {0};
+
+// ble 5.0 extended advertising instance
+#define EXT_ADV_HANDLE  0
+#define NUM_ADV_SET     1
 #define BLE_TASK_STACK_SIZE         8192
 #define BLE_TASK_PRIORITY           4
 #define BLE_QUEUE_SIZE              10
@@ -94,31 +102,73 @@ static bool s_is_connected = false;
 static uint16_t s_current_mtu = 23;
 static QueueHandle_t s_ble_queue = NULL;
 
-// --- ADVERTISING CONFIG ---
-static esp_ble_adv_data_t s_adv_data = {
-    .set_scan_rsp = false,
-    .include_name = true,
-    .include_txpower = true,
-    .min_interval = 0x0006,
-    .max_interval = 0x0010,
-    .appearance = 0x00,
-    .manufacturer_len = 0,
-    .p_manufacturer_data = NULL,
-    .service_data_len = 0,
-    .p_service_data = NULL,
-    .service_uuid_len = sizeof(service_uuid),
-    .p_service_uuid = (uint8_t *)service_uuid,
-    .flag = (ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT),
+// --- BLE 5.0 EXTENDED ADVERTISING CONFIG ---
+
+// extended advertising parameters
+static esp_ble_gap_ext_adv_params_t s_ext_adv_params = {
+    .type = ESP_BLE_GAP_SET_EXT_ADV_PROP_CONNECTABLE,
+    .interval_min = 0x30,  // 30ms
+    .interval_max = 0x60,  // 60ms
+    .channel_map = ADV_CHNL_ALL,
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+    .primary_phy = ESP_BLE_GAP_PHY_1M,
+    .max_skip = 0,
+    .secondary_phy = ESP_BLE_GAP_PHY_1M,  // can use ESP_BLE_GAP_PHY_CODED for long range
+    .sid = EXT_ADV_HANDLE,
+    .scan_req_notif = false,
 };
 
-static esp_ble_adv_params_t s_adv_params = {
-    .adv_int_min        = 0x20,
-    .adv_int_max        = 0x40,
-    .adv_type           = ADV_TYPE_IND,
-    .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,
-    .channel_map        = ADV_CHNL_ALL,
-    .adv_filter_policy  = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
-};
+// raw advertising data buffer (built dynamically)
+static uint8_t s_ext_adv_data[64];
+static size_t s_ext_adv_data_len = 0;
+
+// build extended advertising data
+static void build_ext_adv_data(void)
+{
+    size_t pos = 0;
+    
+    // flags
+    s_ext_adv_data[pos++] = 2;  // length
+    s_ext_adv_data[pos++] = ESP_BLE_AD_TYPE_FLAG;
+    s_ext_adv_data[pos++] = ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT;
+    
+    // complete local name
+    size_t name_len = strlen(s_device_name);
+    if (name_len > 20) name_len = 20;
+    s_ext_adv_data[pos++] = name_len + 1;
+    s_ext_adv_data[pos++] = ESP_BLE_AD_TYPE_NAME_CMPL;
+    memcpy(&s_ext_adv_data[pos], s_device_name, name_len);
+    pos += name_len;
+    
+    // 128-bit service uuid
+    s_ext_adv_data[pos++] = 17;  // length (1 type + 16 uuid)
+    s_ext_adv_data[pos++] = ESP_BLE_AD_TYPE_128SRV_CMPL;
+    memcpy(&s_ext_adv_data[pos], service_uuid, 16);
+    pos += 16;
+    
+    // tx power level
+    s_ext_adv_data[pos++] = 2;
+    s_ext_adv_data[pos++] = ESP_BLE_AD_TYPE_TX_PWR;
+    s_ext_adv_data[pos++] = 0x00;  // 0 dBm
+    
+    s_ext_adv_data_len = pos;
+}
+
+// start extended advertising
+static esp_err_t start_ext_advertising(void)
+{
+    esp_err_t ret;
+    
+    // set extended advertising parameters
+    ret = esp_ble_gap_ext_adv_set_params(EXT_ADV_HANDLE, &s_ext_adv_params);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ext adv set params failed: %s", esp_err_to_name(ret));
+        return ret;
+    }
+    
+    return ESP_OK;  // advertising actually starts after params set complete event
+}
 
 // --- GATT ATTRIBUTE TABLE ---
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
@@ -340,31 +390,60 @@ static void process_incoming_data(uint8_t *data, uint16_t len)
     }
 }
 
-// --- GAP EVENT HANDLER ---
+// --- GAP EVENT HANDLER (BLE 5.0) ---
 static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     switch (event) {
-        case ESP_GAP_BLE_ADV_DATA_SET_COMPLETE_EVT:
-            ESP_LOGI(TAG, "Advertising data set, starting advertising");
-            esp_ble_gap_start_advertising(&s_adv_params);
-            break;
-
-        case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
-            if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
-                ESP_LOGE(TAG, "Advertising start failed: %d", param->adv_start_cmpl.status);
+        // ble 5.0 extended advertising events
+        case ESP_GAP_BLE_EXT_ADV_SET_PARAMS_COMPLETE_EVT:
+            if (param->ext_adv_set_params.status == ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGI(TAG, "ext adv params set, configuring adv data");
+                esp_ble_gap_config_ext_adv_data_raw(EXT_ADV_HANDLE, s_ext_adv_data_len, s_ext_adv_data);
             } else {
-                ESP_LOGI(TAG, "Advertising started");
+                ESP_LOGE(TAG, "ext adv set params failed: %d", param->ext_adv_set_params.status);
             }
             break;
 
+        case ESP_GAP_BLE_EXT_ADV_DATA_SET_COMPLETE_EVT:
+            if (param->ext_adv_data_set.status == ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGI(TAG, "ext adv data set, starting advertising");
+                esp_ble_gap_ext_adv_start(NUM_ADV_SET, &(esp_ble_gap_ext_adv_t){
+                    .instance = EXT_ADV_HANDLE,
+                    .duration = 0,  // advertise forever
+                    .max_events = 0,
+                });
+            } else {
+                ESP_LOGE(TAG, "ext adv data set failed: %d", param->ext_adv_data_set.status);
+            }
+            break;
+
+        case ESP_GAP_BLE_EXT_ADV_START_COMPLETE_EVT:
+            if (param->ext_adv_start.status == ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGI(TAG, "ext advertising started (ble 5.0)");
+            } else {
+                ESP_LOGE(TAG, "ext adv start failed: %d", param->ext_adv_start.status);
+            }
+            break;
+
+        case ESP_GAP_BLE_EXT_ADV_STOP_COMPLETE_EVT:
+            ESP_LOGI(TAG, "ext advertising stopped");
+            break;
+
         case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
-            ESP_LOGI(TAG, "Connection params updated: interval=%d, latency=%d, timeout=%d",
+            ESP_LOGI(TAG, "conn params updated: interval=%d, latency=%d, timeout=%d",
                      param->update_conn_params.conn_int,
                      param->update_conn_params.latency,
                      param->update_conn_params.timeout);
             break;
 
+        case ESP_GAP_BLE_SET_PKT_LENGTH_COMPLETE_EVT:
+            ESP_LOGI(TAG, "packet length set: rx=%d, tx=%d",
+                     param->pkt_data_length_cmpl.params.rx_len,
+                     param->pkt_data_length_cmpl.params.tx_len);
+            break;
+
         default:
+            // ESP_LOGD(TAG, "gap event: %d", event);
             break;
     }
 }
@@ -380,8 +459,12 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             if (param->reg.status == ESP_GATT_OK) {
                 ESP_LOGI(TAG, "GATT server registered, app_id=%d", param->reg.app_id);
                 s_gatts_if = gatts_if;
-                esp_ble_gap_set_device_name(BLE_DEVICE_NAME);
-                esp_ble_gap_config_adv_data(&s_adv_data);
+                esp_ble_gap_set_device_name(s_device_name);
+                
+                // build and start ble 5.0 extended advertising
+                build_ext_adv_data();
+                start_ext_advertising();
+                
                 esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, BLE_IDX_NB, SVC_INST_ID);
             } else {
                 ESP_LOGE(TAG, "GATT server registration failed: %d", param->reg.status);
@@ -412,8 +495,12 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             ESP_LOGI(TAG, "Device disconnected, reason=0x%x", param->disconnect.reason);
             evt.id = BLE_EVT_DISCONNECT;
             xQueueSend(s_ble_queue, &evt, BLE_QUEUE_TIMEOUT);
-            // Restart advertising
-            esp_ble_gap_start_advertising(&s_adv_params);
+            // restart extended advertising
+            esp_ble_gap_ext_adv_start(NUM_ADV_SET, &(esp_ble_gap_ext_adv_t){
+                .instance = EXT_ADV_HANDLE,
+                .duration = 0,
+                .max_events = 0,
+            });
             break;
 
         case ESP_GATTS_MTU_EVT:
@@ -499,9 +586,33 @@ static void ble_task(void *pvParameter)
 
 // --- PUBLIC API ---
 
+// get ble mac address (valid after ble_init)
+esp_err_t ble_get_mac(uint8_t *mac)
+{
+    if (!mac) return ESP_ERR_INVALID_ARG;
+    const uint8_t *addr = esp_bt_dev_get_address();
+    if (!addr) return ESP_ERR_INVALID_STATE;
+    memcpy(mac, addr, 6);
+    return ESP_OK;
+}
+
+// get device name (valid after ble_init)
+const char *ble_get_device_name(void)
+{
+    return s_device_name;
+}
+
 esp_err_t ble_init(void)
 {
     esp_err_t ret;
+
+    // get device name from nvs (or generate one)
+    ret = name_get(0, s_device_name, sizeof(s_device_name));
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "failed to get device name, using default");
+        snprintf(s_device_name, sizeof(s_device_name), "ESP-BLE");
+    }
+    ESP_LOGI(TAG, "device name: %s", s_device_name);
 
     // Create event queue
     s_ble_queue = xQueueCreate(BLE_QUEUE_SIZE, sizeof(ble_event_t));
@@ -560,8 +671,11 @@ esp_err_t ble_init(void)
         return ret;
     }
 
-    // Set local MTU (max 517)
-    // esp_ble_gatt_set_local_mtu(517);
+    // set local mtu for ble 5.0 (max 517, allows larger packets)
+    ret = esp_ble_gatt_set_local_mtu(247);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "set local mtu failed: %s", esp_err_to_name(ret));
+    }
 
     // Create BLE task
     BaseType_t task_ret = xTaskCreate(ble_task, "ble_task", BLE_TASK_STACK_SIZE,
@@ -571,7 +685,7 @@ esp_err_t ble_init(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "BLE initialized successfully");
+    ESP_LOGI(TAG, "BLE 5.0 initialized (ext adv, 1M PHY)");
     return ESP_OK;
 }
 
@@ -632,4 +746,31 @@ void ble_send_message(const char *message)
 bool ble_is_connected(void)
 {
     return s_is_connected;
+}
+
+// set phy mode for advertising
+// phy: ESP_BLE_GAP_PHY_1M (default), ESP_BLE_GAP_PHY_2M (faster), ESP_BLE_GAP_PHY_CODED (long range)
+esp_err_t ble_set_adv_phy(esp_ble_gap_phy_t primary_phy, esp_ble_gap_phy_t secondary_phy)
+{
+    s_ext_adv_params.primary_phy = primary_phy;
+    s_ext_adv_params.secondary_phy = secondary_phy;
+    
+    ESP_LOGI(TAG, "adv phy set: primary=%d, secondary=%d", primary_phy, secondary_phy);
+    
+    // if already advertising, restart with new params
+    if (!s_is_connected) {
+        return start_ext_advertising();
+    }
+    
+    return ESP_OK;
+}
+
+// enable long range mode (coded phy)
+esp_err_t ble_enable_long_range(bool enable)
+{
+    if (enable) {
+        return ble_set_adv_phy(ESP_BLE_GAP_PHY_CODED, ESP_BLE_GAP_PHY_CODED);
+    } else {
+        return ble_set_adv_phy(ESP_BLE_GAP_PHY_1M, ESP_BLE_GAP_PHY_1M);
+    }
 }

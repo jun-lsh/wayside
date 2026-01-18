@@ -22,7 +22,7 @@ static const char* TAG = "hnr26_badge";
 /**
  * @brief I2C master bus handle
  */
-static i2c_master_bus_handle_t hnr26_badge_bus_handle;
+i2c_master_bus_handle_t hnr26_badge_bus_handle;
 /**
  * @brief AW9523 GPIO expander's I2C device handle
  */

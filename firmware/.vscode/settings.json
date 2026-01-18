@@ -1,4 +1,5 @@
 {
     "idf.pythonInstallPath": "/opt/homebrew/bin/python3",
-    "idf.port": "/dev/tty.usbmodem1101"
+    "idf.port": "/dev/tty.usbmodem1101",
+    "idf.flashType": "UART"
 }

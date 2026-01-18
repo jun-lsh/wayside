@@ -8,7 +8,7 @@ dependencies:
     - name: idf
       version: '>=4.1.0'
     source:
-      path: /Users/jun/Projects/hacknroll/wayside/firmware/components/aw9523
+      path: /Users/linyicheng/Documents/code/wayside/firmware/components/aw9523
       type: local
     version: 0.0.3
 direct_dependencies:
