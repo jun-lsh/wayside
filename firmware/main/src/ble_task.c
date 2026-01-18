@@ -203,13 +203,13 @@ static void handle_complete_message(const char *message)
         const char *after_prefix = message + 8;
         const char *colon = strchr(after_prefix, ':');
         if (colon == NULL) {
-            ble_send_message("BITMASK_ERR:FORMAT\n");
+            ble_send_message("BITMASK_ERR:FORMAT\r");
             return;
         }
         
         int bits = atoi(after_prefix);
         if (bits <= 0 || bits > 2048) {
-            ble_send_message("BITMASK_ERR:LEN\n");
+            ble_send_message("BITMASK_ERR:LEN\r");
             return;
         }
         
@@ -235,14 +235,14 @@ static void handle_complete_message(const char *message)
         
         uint8_t *binary = malloc(expected_bytes);
         if (binary == NULL) {
-            ble_send_message("BITMASK_ERR:MEM\n");
+            ble_send_message("BITMASK_ERR:MEM\r");
             return;
         }
         
         char *hex_copy = malloc(hex_len + 1);
         if (hex_copy == NULL) {
             free(binary);
-            ble_send_message("BITMASK_ERR:MEM\n");
+            ble_send_message("BITMASK_ERR:MEM\r");
             return;
         }
         memcpy(hex_copy, hex_data, hex_len);
@@ -252,7 +252,7 @@ static void handle_complete_message(const char *message)
         free(hex_copy);
         if (actual_bytes != expected_bytes) {
             free(binary);
-            ble_send_message("BITMASK_ERR:DATA\n");
+            ble_send_message("BITMASK_ERR:DATA\r");
             return;
         }
         
@@ -268,7 +268,7 @@ static void handle_complete_message(const char *message)
         espnow_set_config_bitmask(binary, actual_bytes, similarity_threshold);
         free(binary);
         
-        ble_send_message("BITMASK_OK\n");
+        ble_send_message("BITMASK_OK\r");
         return;
     }
 
@@ -287,7 +287,7 @@ static void handle_complete_message(const char *message)
         }
 
         espnow_set_config_key(public_key);
-        ble_send_message("PUBKEY_OK\n");
+        ble_send_message("PUBKEY_OK\r");
         return;
     }
 
@@ -295,12 +295,12 @@ static void handle_complete_message(const char *message)
         const char *url_data = message + 8;
         ESP_LOGI(TAG, "Received encrypted URL to relay");
         espnow_set_relay_url(url_data);
-        ble_send_message("ENC_URL_OK\n");
+        ble_send_message("ENC_URL_OK\r");
         return;
     }
 
     if (strcmp(message, "ping") == 0) {
-        ble_send_message("pong\n");
+        ble_send_message("pong\r");
     }
 }
 
