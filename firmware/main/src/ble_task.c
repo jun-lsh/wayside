@@ -34,7 +34,7 @@ static uint8_t s_rx_buffer[RX_BUFFER_SIZE];
 static int s_rx_buffer_len = 0;
 
 // Message delimiter (matches React Native config.messageDelimiter)
-static const char DELIMITER = '\n';
+static const char DELIMITER = '\r';
 
 // --- NORDIC UART SERVICE UUIDS (Little Endian) ---
 // Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e

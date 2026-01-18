@@ -21,7 +21,7 @@ export class BleUartClient {
   private device: Device | null = null;
   private mtu: number = 23; 
   private receiveBuffer: string = '';
-  private messageDelimiter: string = '\n';
+  private messageDelimiter: string = '\r';
   private notificationSubscription: Subscription | null = null; // Type fix
   private config: Required<BleUartConfig>;
 
@@ -34,7 +34,7 @@ export class BleUartClient {
       txCharUUID: config.txCharUUID || UART_TX_CHAR_UUID,
       preferredMTU: config.preferredMTU || 256,
       scanTimeout: config.scanTimeout || 10000,
-      messageDelimiter: config.messageDelimiter || '\n',
+      messageDelimiter: config.messageDelimiter || '\r',
     };
     this.messageDelimiter = this.config.messageDelimiter;
   }
