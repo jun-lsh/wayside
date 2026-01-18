@@ -32,7 +32,7 @@ export class BleUartClient {
       serviceUUID: config.serviceUUID || UART_SERVICE_UUID,
       rxCharUUID: config.rxCharUUID || UART_RX_CHAR_UUID,
       txCharUUID: config.txCharUUID || UART_TX_CHAR_UUID,
-      preferredMTU: config.preferredMTU || 256,
+      preferredMTU: config.preferredMTU || 500,
       scanTimeout: config.scanTimeout || 10000,
       messageDelimiter: config.messageDelimiter || '\r',
     };
@@ -105,11 +105,11 @@ export class BleUartClient {
                 this.device = discoveredDevice;
                 
                 try {
-                  // const deviceWithMTU = await this.manager.requestMTUForDevice(
-                  //   discoveredDevice.id,
-                  //   this.config.preferredMTU
-                  // );
-                  this.mtu = 23;
+                  const deviceWithMTU = await this.manager.requestMTUForDevice(
+                    discoveredDevice.id,
+                    this.config.preferredMTU
+                  );
+                  this.mtu = deviceWithMTU.mtu;
                   console.log(`MTU negotiated to: ${this.mtu}`);
                 } catch (mtuError) {
                   console.warn('MTU request failed, using default:', mtuError);
