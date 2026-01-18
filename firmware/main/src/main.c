@@ -41,7 +41,12 @@ static void nfc_pair_callback(nfc_pair_state_t state, void *arg)
             ESP_LOGI(TAG, "nfc: advertising");
             break;
         case NFC_PAIR_NDEF_WRITTEN:
-            ESP_LOGI(TAG, "nfc: ndef written, tap phone to pair");
+            // when the NDEF is successfully written (or read by phone depending on FD pin config)
+            ESP_LOGI(TAG, "nfc: ndef written/read");
+            
+            // START BLE ADVERTISING NOW
+            // advertise for 30 seconds
+            ble_start_pairing(30); 
             break;
         case NFC_PAIR_PAIRED:
             ESP_LOGI(TAG, "nfc: paired");
@@ -52,21 +57,13 @@ static void nfc_pair_callback(nfc_pair_state_t state, void *arg)
 // init nfc if tag is connected
 static esp_err_t nfc_init_if_connected(void)
 {
+
     esp_err_t ret;
 
-    // init nfc driver
+    /* init nfc */
     ret = nfc_init(&s_nfc, hnr26_badge_bus_handle, NFC_I2C_ADDR, NFC_I2C_FREQ_HZ, NFC_FD_PIN);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "nfc init failed (tag not connected?): %s", esp_err_to_name(ret));
-        return ret;
-    }
-    
-    // try to read a block to verify connection
-    uint8_t test_buf[16];
-    ret = nfc_read_block(&s_nfc, 0, test_buf, true);
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "nfc read failed (tag not responding): %s", esp_err_to_name(ret));
-        nfc_deinit(&s_nfc);
+        ESP_LOGE(TAG, "nfc init failed");
         return ret;
     }
     
@@ -89,7 +86,7 @@ static esp_err_t setup_nfc_pairing(void)
     nfc_pair_config_t pair_cfg = {
         .nfc = &s_nfc,
         .device_name = name,
-        .ndef_timeout_ms = 10000,  // clear ndef after 10 seconds
+        .ndef_timeout_ms = 0,  // clear ndef after 10 seconds
         .callback = nfc_pair_callback,
         .cb_arg = NULL,
     };
@@ -113,26 +110,17 @@ static esp_err_t setup_nfc_pairing(void)
 void app_main(void)
 {
     // configure nfc power enable pin
-    gpio_config_t gpio0_conf = {
+    gpio_config_t pwr_cfg = {
         .pin_bit_mask = (1ULL << NFC_PWR_PIN),
         .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
     };
-    esp_err_t ret = gpio_config(&gpio0_conf);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to configure nfc power pin: %s", esp_err_to_name(ret));
-        return;
-    }
-    ret = gpio_set_level(NFC_PWR_PIN, 1);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to enable nfc power: %s", esp_err_to_name(ret));
-        return;
-    }
+    gpio_config(&pwr_cfg);
+    gpio_set_level(NFC_PWR_PIN, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "nfc power on");
 
     // init nvs
-    ret = nvs_flash_init();
+    esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();

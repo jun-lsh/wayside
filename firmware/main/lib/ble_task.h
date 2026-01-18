@@ -24,6 +24,10 @@ extern "C" {
  */
 esp_err_t ble_init(void);
 
+// Start advertising for a specific duration in seconds (0 = forever)
+// Call this when NFC event occurs
+esp_err_t ble_start_pairing(uint32_t timeout_sec);
+
 /**
  * @brief Send a message to the connected BLE device via notification
  * 

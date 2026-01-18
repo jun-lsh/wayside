@@ -249,6 +249,8 @@ void app_main(void)
         ESP_LOGI(TAG, "uid: %02x:%02x:%02x:%02x:%02x:%02x:%02x",
                  block0[0], block0[1], block0[2], block0[3],
                  block0[4], block0[5], block0[6]);
+    } else {
+        ESP_LOGE(TAG, "nfc read failed");
     }
     
     /* start tasks */

@@ -107,8 +107,8 @@ static QueueHandle_t s_ble_queue = NULL;
 // extended advertising parameters
 static esp_ble_gap_ext_adv_params_t s_ext_adv_params = {
     .type = ESP_BLE_GAP_SET_EXT_ADV_PROP_CONNECTABLE,
-    .interval_min = 0x30,  // 30ms
-    .interval_max = 0x60,  // 60ms
+    .interval_min = 0x20,  // 20ms
+    .interval_max = 0x40,  // 40ms
     .channel_map = ADV_CHNL_ALL,
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
@@ -424,9 +424,9 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                 ESP_LOGE(TAG, "ext adv start failed: %d", param->ext_adv_start.status);
             }
             break;
-
+        
         case ESP_GAP_BLE_EXT_ADV_STOP_COMPLETE_EVT:
-            ESP_LOGI(TAG, "ext advertising stopped");
+            ESP_LOGI(TAG, "advertising stopped (timeout or connected)");
             break;
 
         case ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT:
@@ -448,6 +448,43 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     }
 }
 
+// Add this to ble_task.c (Public API section)
+
+esp_err_t ble_start_pairing(uint32_t timeout_sec)
+{
+    if (s_is_connected) {
+        ESP_LOGW(TAG, "Already connected, ignoring pairing request");
+        return ESP_OK;
+    }
+
+    ESP_LOGI(TAG, "Starting BLE Pairing Mode for %d seconds", (int)timeout_sec);
+
+    // Ensure parameters are set (in case they weren't yet)
+    esp_err_t ret = esp_ble_gap_ext_adv_set_params(EXT_ADV_HANDLE, &s_ext_adv_params);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set adv params: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    // Configure the start structure
+    esp_ble_gap_ext_adv_t ext_adv = {
+        .instance = EXT_ADV_HANDLE,
+        .duration = (timeout_sec * 100), // Unit is 10ms. (e.g. 30s * 100 = 3000 * 10ms = 30000ms)
+        .max_events = 0,
+    };
+
+    // If timeout_sec is 0, duration should be 0 (forever)
+    if (timeout_sec == 0) ext_adv.duration = 0;
+
+    ret = esp_ble_gap_ext_adv_start(NUM_ADV_SET, &ext_adv);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start advertising: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    return ESP_OK;
+}
+
 // --- GATTS EVENT HANDLER ---
 static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                                  esp_ble_gatts_cb_param_t *param)
@@ -461,9 +498,9 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
                 s_gatts_if = gatts_if;
                 esp_ble_gap_set_device_name(s_device_name);
                 
-                // build and start ble 5.0 extended advertising
+                // build adv data, BUT DO NOT START ADVERTISING YET
                 build_ext_adv_data();
-                start_ext_advertising();
+                // start_ext_advertising();  
                 
                 esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, BLE_IDX_NB, SVC_INST_ID);
             } else {
@@ -495,12 +532,16 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             ESP_LOGI(TAG, "Device disconnected, reason=0x%x", param->disconnect.reason);
             evt.id = BLE_EVT_DISCONNECT;
             xQueueSend(s_ble_queue, &evt, BLE_QUEUE_TIMEOUT);
-            // restart extended advertising
+            
+            // no auto restart adv
+            /* 
             esp_ble_gap_ext_adv_start(NUM_ADV_SET, &(esp_ble_gap_ext_adv_t){
                 .instance = EXT_ADV_HANDLE,
                 .duration = 0,
                 .max_events = 0,
             });
+            */
+            ESP_LOGI(TAG, "Waiting for NFC tap to advertise again...");
             break;
 
         case ESP_GATTS_MTU_EVT:

@@ -7,7 +7,7 @@
 static const char *TAG = "monitor";
 
 #define MONITOR_INTERVAL_MS    5000
-#define MONITOR_STACK_SIZE     2048
+#define MONITOR_STACK_SIZE     4096
 #define MONITOR_PRIORITY       3
 
 static adc_ctx_t s_adc_ctx;
