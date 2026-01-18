@@ -48,6 +48,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "react-native-nfc-manager",
       "expo-router",
       [
         "expo-splash-screen",
