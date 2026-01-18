@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "esp_log.h"
 #include <string.h>
 
@@ -47,6 +48,7 @@ typedef struct {
 typedef struct {
     bool initialized;
     bool playing;
+    bool muted;                 /* Mute toggle - suppresses all sound */
     int gpio_num;
     uint32_t frequency;
     uint8_t volume;             /* 0-100 */
@@ -54,6 +56,7 @@ typedef struct {
     
     TaskHandle_t task_handle;
     SemaphoreHandle_t mutex;
+    QueueHandle_t toggle_queue; /* Queue for mute toggle (length 1) */
     
     buzzer_cmd_t cmd;
     beep_pattern_t beep;
@@ -108,20 +111,49 @@ static esp_err_t pwm_set_frequency(uint32_t freq_hz)
 static void buzzer_task(void *arg)
 {
     ESP_LOGI(TAG, "Buzzer task started");
+    uint8_t toggle_msg;
     
     while (1) {
+        /* Check for mute toggle message (non-blocking) */
+        if (xQueueReceive(s_buzzer.toggle_queue, &toggle_msg, 0) == pdTRUE) {
+            if (xSemaphoreTake(s_buzzer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                s_buzzer.muted = !s_buzzer.muted;
+                ESP_LOGI(TAG, "Buzzer %s", s_buzzer.muted ? "MUTED" : "UNMUTED");
+                
+                /* If we just muted and buzzer is playing, stop it immediately */
+                if (s_buzzer.muted && s_buzzer.playing) {
+                    pwm_set_duty(0);
+                    s_buzzer.playing = false;
+                }
+                xSemaphoreGive(s_buzzer.mutex);
+            }
+        }
+        
         buzzer_cmd_t cmd;
         beep_pattern_t beep = {0};
+        bool muted = false;
         
         /* Get current command with mutex protection */
         if (xSemaphoreTake(s_buzzer.mutex, portMAX_DELAY) == pdTRUE) {
             cmd = s_buzzer.cmd;
+            muted = s_buzzer.muted;
             if (cmd == BUZZER_CMD_BEEP) {
                 memcpy(&beep, &s_buzzer.beep, sizeof(beep_pattern_t));
             }
             xSemaphoreGive(s_buzzer.mutex);
         } else {
             vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        
+        /* Skip sound commands if muted */
+        if (muted && (cmd == BUZZER_CMD_START || cmd == BUZZER_CMD_BEEP || cmd == BUZZER_CMD_SEQUENCE)) {
+            /* Clear the command so we don't keep trying */
+            if (xSemaphoreTake(s_buzzer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                s_buzzer.cmd = BUZZER_CMD_NONE;
+                xSemaphoreGive(s_buzzer.mutex);
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
             continue;
         }
         
@@ -304,6 +336,14 @@ esp_err_t buzzer_init(const buzzer_config_t *config)
         return ESP_ERR_NO_MEM;
     }
     
+    /* Create toggle queue with length 1 (only care about latest toggle) */
+    s_buzzer.toggle_queue = xQueueCreate(1, sizeof(uint8_t));
+    if (s_buzzer.toggle_queue == NULL) {
+        ESP_LOGE(TAG, "Toggle queue creation failed");
+        vSemaphoreDelete(s_buzzer.mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    
     BaseType_t task_ret = xTaskCreate(
         buzzer_task,
         BUZZER_TASK_NAME,
@@ -314,12 +354,14 @@ esp_err_t buzzer_init(const buzzer_config_t *config)
     );
     if (task_ret != pdPASS) {
         ESP_LOGE(TAG, "Task creation failed");
+        vQueueDelete(s_buzzer.toggle_queue);
         vSemaphoreDelete(s_buzzer.mutex);
         return ESP_ERR_NO_MEM;
     }
     
     s_buzzer.initialized = true;
     s_buzzer.playing = false;
+    s_buzzer.muted = false;
     s_buzzer.cmd = BUZZER_CMD_NONE;
     
     ESP_LOGI(TAG, "Initialized successfully");
@@ -338,6 +380,11 @@ esp_err_t buzzer_deinit(void)
     if (s_buzzer.task_handle) {
         vTaskDelete(s_buzzer.task_handle);
         s_buzzer.task_handle = NULL;
+    }
+    
+    if (s_buzzer.toggle_queue) {
+        vQueueDelete(s_buzzer.toggle_queue);
+        s_buzzer.toggle_queue = NULL;
     }
     
     if (s_buzzer.mutex) {
@@ -510,4 +557,51 @@ esp_err_t buzzer_play_sequence(const uint32_t *frequencies,
     }
     
     return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t buzzer_toggle_mute(void)
+{
+    if (!s_buzzer.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    uint8_t msg = 1;  /* Value doesn't matter, presence triggers toggle */
+    /* Use xQueueOverwrite to ensure we always succeed (queue length 1) */
+    xQueueOverwrite(s_buzzer.toggle_queue, &msg);
+    
+    return ESP_OK;
+}
+
+esp_err_t buzzer_set_muted(bool muted)
+{
+    if (!s_buzzer.initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    if (xSemaphoreTake(s_buzzer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        bool was_muted = s_buzzer.muted;
+        s_buzzer.muted = muted;
+        
+        /* If we just muted and buzzer is playing, stop it immediately */
+        if (muted && !was_muted && s_buzzer.playing) {
+            pwm_set_duty(0);
+            s_buzzer.playing = false;
+        }
+        
+        ESP_LOGI(TAG, "Buzzer %s", muted ? "MUTED" : "UNMUTED");
+        xSemaphoreGive(s_buzzer.mutex);
+        return ESP_OK;
+    }
+    
+    return ESP_ERR_TIMEOUT;
+}
+
+bool buzzer_is_muted(void)
+{
+    return s_buzzer.muted;
+}
+
+QueueHandle_t buzzer_get_toggle_queue(void)
+{
+    return s_buzzer.toggle_queue;
 }

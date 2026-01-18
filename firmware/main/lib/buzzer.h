@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -179,6 +181,41 @@ esp_err_t buzzer_beep_once(void);
 esp_err_t buzzer_play_sequence(const uint32_t *frequencies, 
                                 const uint32_t *durations, 
                                 size_t length);
+
+/**
+ * @brief Toggle buzzer mute state
+ * 
+ * Sends a toggle message to the buzzer task's queue.
+ * When muted, all sound commands are silently ignored.
+ * 
+ * @return ESP_OK on success
+ */
+esp_err_t buzzer_toggle_mute(void);
+
+/**
+ * @brief Set buzzer mute state directly
+ * 
+ * @param muted true to mute, false to unmute
+ * @return ESP_OK on success, ESP_ERR_TIMEOUT if mutex timeout
+ */
+esp_err_t buzzer_set_muted(bool muted);
+
+/**
+ * @brief Check if buzzer is muted
+ * 
+ * @return true if muted, false otherwise
+ */
+bool buzzer_is_muted(void);
+
+/**
+ * @brief Get the toggle queue handle
+ * 
+ * External tasks can use this queue to trigger mute toggle.
+ * Queue length is 1, use xQueueOverwrite() to send.
+ * 
+ * @return QueueHandle_t for the toggle queue
+ */
+QueueHandle_t buzzer_get_toggle_queue(void);
 
 #ifdef __cplusplus
 }

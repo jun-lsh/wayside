@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, StyleSheet, Alert, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ActivityIndicator, StyleSheet, Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { RSA } from 'react-native-rsa-native';
 import { BleUartClient } from '@/utils/ble-uart';
@@ -25,12 +25,10 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
   const [nfcEnabled, setNfcEnabled] = useState(false);
 
   useEffect(() => {
-    // load saved device name
     SecureStore.getItemAsync(DEVICE_NAME_STORAGE_KEY).then(name => {
       if (name) setDeviceName(name);
     });
 
-    // check nfc support
     initNfc().then(supported => {
       setNfcSupported(supported);
       if (supported) {
@@ -43,13 +41,10 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
     };
   }, []);
 
-  // complete pairing after ble connection
   const completePairing = async (connectedDeviceName: string) => {
     try {
-      // save device name
       await SecureStore.setItemAsync(DEVICE_NAME_STORAGE_KEY, connectedDeviceName);
 
-      // generate rsa keys
       setStatus('generating');
       const keys = await RSA.generateKeys(1024);
       await SecureStore.setItemAsync(KEYPAIR_STORAGE_KEY, JSON.stringify({
@@ -57,26 +52,19 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
         privateKey: keys.private,
       }));
 
-      // send public key to device
       setStatus('sending');
-
-      // iOS BLE payload handling can be weird with CRLF, so normalize to CR.
       const normalizedPublicKey = keys.public.replace(/\r\n/g, '\n').replace(/\n/g, '\n');
-
-      // Wait for "PUBKEY_OK"
       await sendAndWaitForAck(bleClient, `PUBKEY:${normalizedPublicKey}`, 'PUBKEY_OK');
 
-      // done!
       onComplete();
     } catch (error: any) {
       console.error('Pairing error:', error);
       Alert.alert('Pairing Failed', error.message);
       setStatus('idle');
-      bleClient.disconnect().catch(() => { });
+      bleClient.disconnect().catch(() => {});
     }
   };
 
-  // nfc tap to pair
   const handleNfcPair = async () => {
     if (!nfcEnabled) {
       Alert.alert('NFC Disabled', 'Please enable NFC in your device settings.');
@@ -86,21 +74,18 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
     setStatus('nfc_scanning');
 
     try {
-      // wait for nfc tap
-      const oobData = await scanNfcTag(60000); // 60 second timeout
-
+      const oobData: BleOobData = await scanNfcTag(60000);
       console.log('NFC BLE OOB data:', oobData);
 
-      // connect to device
       setStatus('connecting');
 
-      // prefer connecting by name (more reliable than mac on some platforms)
       if (oobData.deviceName) {
+        if (oobData.macAddress) {
+          await SecureStore.setItemAsync(DEVICE_MAC_STORAGE_KEY, oobData.macAddress);
+        }
         await bleClient.connectByName(oobData.deviceName);
         await completePairing(oobData.deviceName);
       } else if (oobData.macAddress) {
-        // fallback to mac address if no name
-        // note: this requires connectByMac method in BleUartClient
         Alert.alert('Error', 'Device name not found in NFC data');
         setStatus('idle');
       }
@@ -113,7 +98,6 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
     }
   };
 
-  // manual pairing by device name
   const handleManualPair = async () => {
     if (!deviceName.trim()) {
       Alert.alert('Error', 'Please enter the device name');
@@ -129,17 +113,16 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
       console.error('Manual pairing error:', error);
       Alert.alert('Connection Failed', error.message);
       setStatus('idle');
-      bleClient.disconnect().catch(() => { });
+      bleClient.disconnect().catch(() => {});
     }
   };
 
   const handleCancel = () => {
     cancelNfcScan();
-    bleClient.disconnect().catch(() => { });
+    bleClient.disconnect().catch(() => {});
     setStatus('idle');
   };
 
-  // loading state
   if (status !== 'idle') {
     return (
       <View style={styles.center}>
@@ -163,7 +146,6 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
     <View style={styles.container}>
       <ThemedText type="title" style={styles.title}>Pair Device</ThemedText>
 
-      {/* nfc pairing option */}
       {nfcSupported && (
         <View style={styles.section}>
           <ThemedText style={styles.sectionTitle}>Quick Pair with NFC</ThemedText>
@@ -187,7 +169,6 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
         </View>
       )}
 
-      {/* divider */}
       {nfcSupported && (
         <View style={styles.divider}>
           <View style={styles.dividerLine} />
@@ -196,7 +177,6 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
         </View>
       )}
 
-      {/* manual pairing option */}
       <View style={styles.section}>
         <ThemedText style={styles.sectionTitle}>Manual Pairing</ThemedText>
         <ThemedText style={styles.label}>Device Name</ThemedText>
@@ -204,7 +184,7 @@ export default function PairingStep({ bleClient, onComplete }: PairingStepProps)
           style={styles.input}
           value={deviceName}
           onChangeText={setDeviceName}
-          placeholder="e.g. keenbee46"
+          placeholder="Enter device name"
           placeholderTextColor="#999"
           autoCapitalize="none"
           autoCorrect={false}
