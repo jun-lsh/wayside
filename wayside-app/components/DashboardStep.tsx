@@ -27,8 +27,9 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
 
   useEffect(() => {
     bleClient.startNotifications(
-      async (msg) => {
+      async (rawMsg) => {
         const timestamp = new Date().toLocaleTimeString();
+        const msg = rawMsg.replace(/^[\s\r\n]+|[\s\r\n]+$/g, '');
         // Filter out excessively long log messages to keep UI clean
         const logMsg = msg.length > 50 ? `${msg.substring(0, 50)}...` : msg;
         setLogs((prev) => [...prev, `[${timestamp}] ${logMsg}`]);
@@ -40,6 +41,7 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
         }
 
         if (msg.startsWith('RECV_URL:')) {
+          console.log(msg)
           const payload = msg.replace('RECV_URL:', '').trim();
           setReceivedEncryptedPayload(payload);
           setLogs((prev) => [...prev, `[${timestamp}] Partner's selfie payload received`]);
@@ -79,11 +81,12 @@ export default function DashboardStep({ bleClient, onStartUpload, selfieUploadCo
       }
 
       const publicUrl = parts[0];
-      const encryptedAesKey = parts[1];
-
+      const encryptedAesKey = parts[1].trim();
+      const cleanEncryptedKey = encryptedAesKey.replace(/[^A-Za-z0-9+/=]/g, '');
       // 3. Decrypt the AES Key using our Private RSA Key
       // Note: RSA.decrypt expects the encrypted string (Base64)
-      const decryptedAesKey = await RSA.decrypt(encryptedAesKey, privateKey);
+      console.log(`Decrypting Key: Len=${cleanEncryptedKey.length}`);
+      const decryptedAesKey = await RSA.decrypt(cleanEncryptedKey, privateKey);
       
       if (!decryptedAesKey) throw new Error('Failed to decrypt AES key');
 
