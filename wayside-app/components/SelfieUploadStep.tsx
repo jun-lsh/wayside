@@ -92,25 +92,11 @@ export default function SelfieUploadStep({ bleClient, onCancel, onComplete }: Se
             // 4. Encrypt Key via RSA & Send via BLE
             setLoadingMessage('Linking...');
             const partnerKey = await SecureStore.getItemAsync(PARTNER_KEY_STORAGE);
-            if (!partnerKey) {
-                Alert.alert('No Partner', 'No partner key found.');
-                return;
-            }
+            if (!partnerKey) throw new Error('Partner connection lost');
 
-            // === FIX STARTS HERE ===
-
-            // 1. Encrypt ONLY the Secret Key (64 bytes). 
-            // This fits easily inside the 117-byte limit of a 1024-bit RSA key.
-            const encryptedKey = await RSA.encrypt(result.key, partnerKey);
-
-            // 2. Combine the PLAIN URL and the ENCRYPTED KEY.
-            // Format: PUBLIC_URL|RSA_ENCRYPTED_KEY
-            // Note: The recipient (badge) needs to split this string by '|', 
-            // use the URL as is, and decrypt the second part to get the AES key.
-            let payload = `${result.publicUrl}|${encryptedKey}`;
-            payload = payload.replace(/\r\n/g, '\n').replace(/\n/g, '\n');
-            // 3. Send via BLE
-            // Ensure your BLE client handles long messages (chunking) if this exceeds ~20-500 bytes
+            const encryptedKey = await RSA.encrypt(secretKey, partnerKey);
+            const payload = `${urlData.publicUrl}|${encryptedKey}`;
+            
             await sendAndWaitForAck(bleClient, `ENC_URL:${payload}`, 'ENC_URL_OK');
 
             // 5. Done - Return to Dashboard immediately
