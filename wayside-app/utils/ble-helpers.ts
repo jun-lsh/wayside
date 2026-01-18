@@ -50,7 +50,7 @@ export const sendAndWaitForAck = (
     );
 
     // 2. Send the message
-    client.writeMessage(messageToSend + '\n', true)
+    client.writeMessage(messageToSend + '\r', true)
       .catch((err) => {
         if (!hasResolved) {
           hasResolved = true;
