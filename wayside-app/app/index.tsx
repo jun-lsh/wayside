@@ -3,29 +3,47 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import { ThemedView } from '@/components/themed-view';
 import { BleUartClient } from '@/utils/ble-uart';
+import * as SecureStore from 'expo-secure-store';
 
 // Components
 import PairingStep from '../components/PairingStep';
 import InterestsStep from '../components/InterestsStep';
 import DashboardStep from '../components/DashboardStep';
-import SelfieUploadStep from '../components/SelfieUploadStep'; // <--- Import
+import SelfieUploadStep from '../components/SelfieUploadStep';
 
-// Updated Types
+const PARTNER_KEY_STORAGE = 'partner_public_key';
+
 type AppStep = 'PAIRING' | 'INTERESTS' | 'DASHBOARD' | 'SELFIE_UPLOAD';
 
 export default function App() {
   const [currentStep, setCurrentStep] = useState<AppStep>('PAIRING');
   const [selfieUploadComplete, setSelfieUploadComplete] = useState(false);
   
+  // Keep BLE Client alive throughout the app lifecycle
   const bleClientRef = useRef<BleUartClient>(new BleUartClient());
 
   useEffect(() => {
     const client = bleClientRef.current;
-    client.initialize().then(() => console.log('BLE Init OK')).catch(console.error);
-    return () => {
-      client.destroy();
-    };
+    client.initialize()
+      .then(() => console.log('BLE Init OK'))
+      .catch(console.error);
+    
+    return () => { client.destroy(); };
   }, []);
+
+  // Reset function to go back to scanning mode
+  const handleReset = async () => {
+    // Clear stored partner data so we can find a new one or the same one again
+    await SecureStore.deleteItemAsync(PARTNER_KEY_STORAGE);
+    
+    // Reset State
+    setSelfieUploadComplete(false);
+    
+    // In a real scenario, you might want to tell the Badge to reset too
+    // bleClientRef.current.write('RESET'); 
+    
+    setCurrentStep('DASHBOARD'); // Should trigger the "Searching..." view
+  };
 
   const renderContent = () => {
     switch (currentStep) {
@@ -49,6 +67,7 @@ export default function App() {
             bleClient={bleClientRef.current}
             onStartUpload={() => setCurrentStep('SELFIE_UPLOAD')}
             selfieUploadComplete={selfieUploadComplete}
+            onReset={handleReset}
           />
         );
       case 'SELFIE_UPLOAD':

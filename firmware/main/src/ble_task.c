@@ -460,7 +460,7 @@ static void ble_task(void *pvParameter)
 {
     ble_event_t evt;
 
-    ESP_LOGI(TAG, "BLE task started");
+    ESP_LOGI(TAG, "BLE task started, name = %s", BLE_DEVICE_NAME);
 
     while (1) {
         if (xQueueReceive(s_ble_queue, &evt, portMAX_DELAY) == pdTRUE) {

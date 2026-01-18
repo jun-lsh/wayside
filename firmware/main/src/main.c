@@ -62,7 +62,7 @@ void app_main(void)
     buzzer_config_t config = {
         .gpio_num = 3,
         .frequency = 2700,
-        .initial_volume = 100
+        .initial_volume = 60
     };
     ret = buzzer_init(&config);
 
