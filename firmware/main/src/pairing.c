@@ -372,6 +372,7 @@ void pairing_tick(pairing_ctx_t *ctx)
                 if (ctx->kex.key_confirmed && !ctx->kex.notified_phone) {
                     char msg[PAIRING_KEY_MAX_LEN + 16];
                     snprintf(msg, sizeof(msg), "PARTNER:%s\r", ctx->partner_public_key);
+                    ESP_LOGI(TAG, "%s", msg);
                     ble_send_message(msg);
                     ctx->kex.notified_phone = true;
                     ESP_LOGI(TAG, "Notified phone of partner pubkey");

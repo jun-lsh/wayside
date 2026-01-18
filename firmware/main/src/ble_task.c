@@ -18,7 +18,7 @@
 
 static const char *TAG = "ble_task";
 
-#define BLE_DEVICE_NAME             "ESP-BLE-1" // hardcoded for now
+#define BLE_DEVICE_NAME             "ESP-BLE-2" // hardcoded for now
 #define BLE_TASK_STACK_SIZE         8192
 #define BLE_TASK_PRIORITY           4
 #define BLE_QUEUE_SIZE              10
