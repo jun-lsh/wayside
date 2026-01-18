@@ -41,7 +41,7 @@ managed_components/
 # If ESP-IDF tools are installed/referenced locally to the project
 .espressif/
 # If using the ESP-IDF extension for VS Code
-depedencies.lock
+dependencies.lock
 
 # CMake generated files
 CMakeCache.txt
